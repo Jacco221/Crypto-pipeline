@@ -1,6 +1,6 @@
 symbol,name,ta_ma,ta_volume,ta_funding,TA_%,Macro_%,RS_%,Total_%,AvgDataAge_h
+ETH,Ethereum,1,1,0,97.4,50.0,100.0,88.4,0.0
+WBETH,Wrapped Beacon ETH,1,1,0,97.4,50.0,100.0,88.4,0.0
+BNB,BNB,1,1,0,97.4,50.0,100.0,88.4,0.0
+SOL,Solana,1,1,0,97.4,50.0,100.0,88.4,0.0
 ADA,Cardano,1,1,0,97.4,50.0,100.0,88.4,0.0
-LINK,Chainlink,1,1,0,97.4,50.0,100.0,88.4,0.0
-WBTC,Wrapped Bitcoin,1,1,0,97.4,50.0,50.0,78.4,0.0
-DOGE,Dogecoin,1,1,0,97.4,50.0,50.0,78.4,0.0
-WBETH,Wrapped Beacon ETH,1,0,0,73.7,50.0,100.0,74.2,0.0
