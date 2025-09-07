@@ -89,7 +89,7 @@ jobs:
             --out-csv     data/reports/moonshots_v2_latest.csv \
             --out-md      data/reports/moonshots_v2_latest.md \
             --top 5 \
-            --min-rank 30 \
+            --exclude-top-rank 30 \
             --exclude-bluechips
 
       # ---------------------------
