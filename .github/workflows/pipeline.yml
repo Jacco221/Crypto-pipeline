@@ -131,7 +131,7 @@ jobs:
               --scores-json data/reports/scores_latest.json \
               --out-csv data/reports/moonshots_v2_latest.csv \
               --out-md  data/reports/moonshots_v2_latest.md \
-              --top 5 \
+              --top 10 \
               --min-volume 1.0 \
               --exclude-top-rank 30 \
               --exclude-bluechips
