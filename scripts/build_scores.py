@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import sys, time, json, math
+import json, time, sys
 from pathlib import Path
 import pandas as pd
 import numpy as np
@@ -10,31 +10,23 @@ import urllib.request
 CG_BASE = "https://api.coingecko.com/api/v3"
 
 def http_get(url):
-    """GET met kleine retry-backoff en korte timeout."""
     for i in range(5):
         try:
             with urllib.request.urlopen(url, timeout=30) as r:
                 return json.load(r)
         except Exception:
-            if i == 4:
-                raise
-            time.sleep(1.5*(i+1))
+            if i == 4: raise
+            time.sleep(1.5 * (i + 1))
     return None
 
 def fetch_markets(vs="usd", n=300):
-    """Haal ±n coins op in batches van 250, sortering = market_cap_desc."""
     per_page = 250
-    pages = math.ceil(n/per_page)
+    pages = (n + per_page - 1) // per_page
     rows = []
-    for p in range(1, pages+1):
-        url = (
-            f"{CG_BASE}/coins/markets"
-            f"?vs_currency={vs}"
-            f"&order=market_cap_desc"
-            f"&per_page={per_page}"
-            f"&page={p}"
-            f"&price_change_percentage=1h,24h,7d,30d"
-        )
+    for p in range(1, pages + 1):
+        url = (f"{CG_BASE}/coins/markets?vs_currency={vs}"
+               f"&order=market_cap_desc&per_page={per_page}&page={p}"
+               f"&price_change_percentage=1h,24h,7d,30d")
         data = http_get(url)
         if not data:
             break
@@ -42,96 +34,75 @@ def fetch_markets(vs="usd", n=300):
     return rows[:n]
 
 def safe(x):
-    try:
-        return float(x)
-    except Exception:
-        return np.nan
+    try: return float(x)
+    except: return np.nan
 
 def winsor(s, p=0.01):
-    lo, hi = s.quantile(p), s.quantile(1-p)
+    lo, hi = s.quantile(p), s.quantile(1 - p)
     return s.clip(lo, hi)
 
 def compute(df: pd.DataFrame) -> pd.DataFrame:
-    # pak de benodigde velden / normaliseer namen
-    df["pc_1d"]  = df.get("price_change_percentage_24h_in_currency", np.nan).apply(safe)
-    df["pc_7d"]  = df.get("price_change_percentage_7d_in_currency",  np.nan).apply(safe)
-    df["pc_30d"] = df.get("price_change_percentage_30d_in_currency", np.nan).apply(safe)
-    df["vol"]    = df.get("total_volume", np.nan).astype(float)
+    df["pc_1d"]  = df["price_change_percentage_24h_in_currency"].apply(safe)
+    df["pc_7d"]  = df["price_change_percentage_7d_in_currency"].apply(safe)
+    df["pc_30d"] = df["price_change_percentage_30d_in_currency"].apply(safe)
+    df["ta_volume"] = df["total_volume"].astype(float)
 
-    # robust: market_cap_rank kan None zijn -> NaN, en heet NIET 'rank'
-    mcr = df.get("market_cap_rank")
-    if mcr is None:
-        df["market_cap_rank"] = np.nan
-    df["market_cap_rank"] = df["market_cap_rank"].astype(float)
+    # gestandaardiseerde score (simpel & robuust)
+    m = 0.5*winsor(df["pc_30d"]) + 0.3*winsor(df["pc_7d"]) + 0.2*winsor(df["pc_1d"])
+    m = m.fillna(0.0)
+    v = df["ta_volume"]
+    v = np.log1p((v - v.min()) / (v.max() - v.min() + 1e-9))
 
-    # winsor + zscore op performance-vensters en volume
-    for col in ["pc_1d","pc_7d","pc_30d"]:
-        m = winsor(df[col].astype(float).fillna(0.0))
-        m = (m - m.min()) / (m.max() - m.min() + 1e-9)  # schaal 0..1
-        df[col+"_z"] = (m - m.mean())/(m.std() + 1e-9)
+    ta = 100*(0.85*m + 0.15*v)
 
-    v = np.log(df["vol"].fillna(0.0) + 1.0)
-    v = (v - v.min())/(v.max() - v.min() + 1e-9)
-    df["vol_z"] = (v - v.mean())/(v.std() + 1e-9)
+    rs = df["pc_30d"].rank(pct=True)*100
+    med30 = np.nanmedian(df["pc_30d"])
 
-    # simpele samengestelde score
-    # (deze wegingen hielden in eerdere versie goed stand)
-    score = 0.5*df["pc_30d_z"] + 0.3*df["pc_7d_z"] + 0.2*df["pc_1d_z"] + 0.15*df["vol_z"]
-    score = score.replace([np.inf,-np.inf], np.nan).fillna(score.mean())
-    df["Total_%"] = (score - score.min())/(score.max() - score.min() + 1e-9) * 100.0
+    btc30 = float(df.loc[df["symbol"].str.upper()=="BTC","pc_30d"].fillna(0).values[0]) if (df["symbol"].str.upper()=="BTC").any() else med30
+    macro = np.clip(50+25*np.sign(med30)+25*np.sign(btc30),0,100)
 
-    # BTC-bias iets dempen op 30d (optioneel; klein effect)
-    is_btc = (df["symbol"].str.upper() == "BTC")
-    df.loc[is_btc, "Total_%"] = np.clip(df.loc[is_btc, "Total_%"] - 2.0, 0, 100)
+    total = 0.5*ta + 0.3*rs + 0.2*macro
 
     out = pd.DataFrame({
         "symbol": df["symbol"].str.upper(),
-        "name":   df["name"],
-        "rank":   df["market_cap_rank"].astype(float),     # <-- hier gebruiken we market_cap_rank
-        "price":  df["current_price"].astype(float),
-        "ta_volume": df["vol"].astype(float),
-        "pc_1d%":  df["pc_1d"].round(2),
-        "pc_7d%":  df["pc_7d"].round(2),
-        "pc_30d%": df["pc_30d"].round(2),
-        "Total_%": df["Total_%"].round(2)
+        "name": df["name"],
+        "rank": df["market_cap_rank"].astype(float),
+        "price": df["current_price"].astype(float),
+        "pc_1d": df["pc_1d"], "pc_7d": df["pc_7d"], "pc_30d": df["pc_30d"],
+        "ta_volume": df["ta_volume"].astype(float),
+        "TA_%": ta.round(2), "RS_%": rs.round(2), "Macro_%": round(macro,2),
+        "Total_%": total.round(2), "AvgDataAge_h": 0.0, "age_h": 1.0, "ta_funding": 0.0
     })
-
-    # sorteer voor consistentie (hoogste score eerst)
-    out = out.sort_values(["Total_%"], ascending=[False]).reset_index(drop=True)
-    return out
+    return out.sort_values(["Total_%","rank"], ascending=[False, True]).reset_index(drop=True)
 
 def main():
     out_csv = Path("data/reports/scores_latest.csv")
     out_json = Path("data/reports/scores_latest.json")
     out_csv.parent.mkdir(parents=True, exist_ok=True)
 
-    try:
-        mkts = fetch_markets(vs="usd", n=300)
-    except Exception as e:
-        print(f"Fout in build_scores (fetch): {e}", file=sys.stderr)
+    print("🌐 Haal marktdata op van CoinGecko…", file=sys.stderr)
+    markets = fetch_markets("usd", 300)
+    n = len(markets)
+    print(f"✔️  opgehaald: {n} coins", file=sys.stderr)
+    if n < 200:
+        print("❌ Te weinig coins opgehaald (CoinGecko rate/timeout?). Stop.", file=sys.stderr)
         sys.exit(1)
 
-    if not mkts:
-        print("Fout in build_scores: geen data van CoinGecko", file=sys.stderr)
+    df = pd.DataFrame(markets)
+    if "market_cap_rank" not in df.columns:
+        print("❌ 'market_cap_rank' ontbreekt in response.", file=sys.stderr)
         sys.exit(1)
 
-    df = pd.DataFrame(mkts)
-    try:
-        out = compute(df)
-    except Exception as e:
-        print(f"Fout in build_scores (compute): {e}", file=sys.stderr)
-        # handige hint: laat beschikbare kolommen zien
-        print(f"Kolommen ontvangen: {list(df.columns)}", file=sys.stderr)
-        sys.exit(1)
+    scores = compute(df)
+    scores.to_csv(out_csv, index=False)
+    with out_json.open("w") as f:
+        json.dump(scores.to_dict(orient="records"), f)
 
-    try:
-        out.to_csv(out_csv, index=False)
-        out.to_json(out_json, orient="records")
-        print(f"✅ Geschreven: {out_csv} ({len(out)} rijen)")
-        print(f"✅ Geschreven: {out_json}")
-    except Exception as e:
-        print(f"Fout in build_scores (write): {e}", file=sys.stderr)
-        sys.exit(1)
+    print(f"✅ Geschreven: {out_csv} en {out_json}", file=sys.stderr)
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        print(f"Fout in build_scores: {e}", file=sys.stderr)
+        sys.exit(1)
