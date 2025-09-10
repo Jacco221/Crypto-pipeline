@@ -1,13 +1,18 @@
 name: Daily Crypto Pipeline
 
 on:
+  # Handmatig draaien
   workflow_dispatch:
+  # Dagelijks schema (06:00 UTC). Zet desgewenst uit of wijzig de tijd.
   schedule:
-    # 06:00 NL-tijd ≈ 04:00 UTC in winter, 05:00 UTC in zomer.
-    - cron: '0 5 * * *'
+    - cron: "0 6 * * *"
+
+concurrency:
+  group: daily-crypto
+  cancel-in-progress: false
 
 permissions:
-  contents: write
+  contents: write   # nodig voor de optionele commit-stap
 
 jobs:
   build-and-report:
@@ -15,6 +20,7 @@ jobs:
     defaults:
       run:
         shell: bash
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -24,55 +30,39 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
       - name: Install dependencies
         run: |
           python -m pip install -U pip
           if [ -f requirements.txt ]; then
-            pip install -r requirements.txt
+            python -m pip install -r requirements.txt
           else
-            pip install pandas numpy requests
+            # Minimale set voor je scripts
+            python -m pip install pandas numpy requests python-dateutil
           fi
 
       - name: Prepare report dir
         run: |
           mkdir -p data/reports data/state
-
-      - name: Diagnostics (before build)
-        run: |
-          echo "::group::tree data"
+          echo "::group::Tree data/"
           ls -lahR data || true
           echo "::endgroup::"
 
-      # >>> Belangrijk: oude outputs eerst weg, zodat build MOET schrijven
-      - name: Clean old outputs
-        run: |
-          rm -f data/reports/scores_latest.csv \
-                data/reports/scores_latest.json \
-                data/reports/top5_latest.csv \
-                data/reports/top5_latest.md \
-                data/reports/moonshots_v2_latest.csv \
-                data/reports/moonshots_v2_latest.md \
-                data/reports/latest.csv \
-                data/reports/latest.json
-
-      # -------- BUILD SCORES --------
+      # ---- BUILD SCORES (kritiek) ----
       - name: Build scores (CoinGecko → scores_latest.csv/json)
         run: |
+          set -e
           python3 scripts/build_scores.py
-          echo "::group::scores head"
-          head -n 10 data/reports/scores_latest.csv
-          echo "::endgroup::"
-          echo "Regels in scores_latest.csv:"
-          wc -l data/reports/scores_latest.csv
 
       - name: Assert scores exist (hard check)
         run: |
+          set -e
           test -f data/reports/scores_latest.csv || { echo "❌ scores_latest.csv ontbreekt"; exit 1; }
           test -s data/reports/scores_latest.csv || { echo "❌ scores_latest.csv is leeg"; exit 1; }
+          # JSON optioneel maar handig voor moonshots
+          [ -f data/reports/scores_latest.json ] || echo "⚠️  scores_latest.json ontbreekt (ga door)"
 
-      # -------- TOP 5 BOUWEN --------
       - name: Build top5_latest.csv & top5_latest.md
         run: |
           python - <<'PY'
@@ -80,28 +70,33 @@ jobs:
           os.makedirs("data/reports", exist_ok=True)
           src = "data/reports/scores_latest.csv"
           df = pd.read_csv(src)
-          # kies kolom voor sortering
+          # Kies de eerste score-kolom die matcht
           key = None
           for k in ("score","Total_%","total","TOTAL_%"):
-              if k in df.columns: key=k; break
-          if key is None: raise SystemExit("Geen score-kolom gevonden.")
+              if k in df.columns: key = k; break
+          if key is None:
+              raise SystemExit("geen score-kolom gevonden")
           out = df.sort_values(key, ascending=False).head(5).copy()
           out.rename(columns={key:"score"}, inplace=True)
           out.to_csv("data/reports/top5_latest.csv", index=False)
-          # markdown
-          lines=["| # | Symbool | Score |","|--:|:-------|-----:|"]
+
+          lines = [["# | Symbol | Naam | Score |"],
+                   ["--|--|--|--|"]]
           sym = next((c for c in out.columns if c.lower()=="symbol"), out.columns[0])
-          for i,(idx,row) in enumerate(out.iterrows(),1):
-              lines.append(f"| {i} | {row[sym]} | {row['score']} |")
-          open("data/reports/top5_latest.md","w").write("\n".join(lines)+"\n")
+          nam = next((c for c in out.columns if c.lower()=="name"), out.columns[0])
+          for i,row in enumerate(out.itertuples(index=False),1):
+              lines.append([f"{i} | {getattr(row,sym)} | {getattr(row,nam)} | {getattr(row,'score')}"])
+          with open("data/reports/top5_latest.md","w",encoding="utf-8") as f:
+              f.write("\n".join("".join(x) for x in lines)+"\n")
           print("✅ top5_latest.csv & top5_latest.md gemaakt.")
           PY
 
-      # -------- ANNOTATIE & GUARDS (optioneel) --------
-      - name: Annotate top5 with market regime & advice
+      - name: Annotate top5 with market regime (MA window)
         run: |
           if [ -f scripts/annotate_market_regime.py ]; then
-            python3 scripts/annotate_market_regime.py data/reports/top5_latest.md
+            python3 scripts/annotate_market_regime.py \
+              --out-md data/reports/top5_latest.md \
+              --window 20
           else
             echo "skip annotate_market_regime (script ontbreekt)"
           fi
@@ -117,12 +112,11 @@ jobs:
       - name: Allocation advice (append MD)
         run: |
           if [ -f scripts/advise_allocation.py ]; then
-            python3 scripts/advise_allocation.py --append-md --md-file data/reports/top5_latest.md || true
+            python3 scripts/advise_allocation.py --append-md --md-file data/reports/top5_latest.md
           else
             echo "skip advise_allocation (script ontbreekt)"
           fi
 
-      # -------- MOONSHOT v2 (optioneel) --------
       - name: Run Moonshot v2 (exclude top-30 + bluechips)
         run: |
           if [ -f scripts/moonshot_v2.py ]; then
@@ -131,7 +125,7 @@ jobs:
               --scores-json data/reports/scores_latest.json \
               --out-csv data/reports/moonshots_v2_latest.csv \
               --out-md  data/reports/moonshots_v2_latest.md \
-              --top 10 \
+              --top 5 \
               --min-volume 1.0 \
               --exclude-top-rank 30 \
               --exclude-bluechips
@@ -139,26 +133,21 @@ jobs:
             echo "skip moonshot_v2 (script ontbreekt)"
           fi
 
-      # -------- DATUM BESTANDSNAME --------
-      - name: Dated copies (YYYY-MM-DD, UTC)
+      - name: Datestamp (UTC)
         id: datestamp
+        run: echo "date=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+
+      - name: Add dated copies (YYYY-MM-DD, UTC)
         run: |
-          DATE="$(date -u +%Y-%m-%d)"; echo "date=$DATE" >> "$GITHUB_OUTPUT"
-          for f in data/reports/scores_latest.csv data/reports/scores_latest.json \
-                   data/reports/top5_latest.csv data/reports/top5_latest.md \
-                   data/reports/moonshots_v2_latest.csv data/reports/moonshots_v2_latest.md \
-                   data/reports/latest.csv data/reports/latest.json
+          d="${{ steps.datestamp.outputs.date }}"
+          for f in latest.csv latest.json \
+                   scores_latest.csv scores_latest.json \
+                   top5_latest.csv top5_latest.md \
+                   moonshots_v2_latest.csv moonshots_v2_latest.md
           do
-            [ -f "$f" ] || continue
-            base="$(basename "$f")"; ext="${base##*.}"; name="${base%.*}"
-            if [[ "$name" == *_v2_latest* ]]; then
-              cp -f "$f" "data/reports/${name/_v2_latest/_v2_$DATE}.$ext"
-            elif [[ "$name" == *_latest* ]]; then
-              cp -f "$f" "data/reports/${name/_latest/_$DATE}.$ext"
-            else
-              cp -f "$f" "data/reports/${name}_$DATE.$ext"
-            fi
+            [ -f "data/reports/$f" ] && cp "data/reports/$f" "data/reports/${f%.*}_$d.${f##*.}"
           done
+          echo "📦 Dated copies toegevoegd voor $d"
 
       - name: Upload reports artifact
         uses: actions/upload-artifact@v4
@@ -170,5 +159,22 @@ jobs:
             data/reports/latest.*
             data/reports/scores_latest.*
             data/reports/top5_latest.*
-            data/reports/moonshots*.*
+            data/reports/moonshots_v2_latest.*
             data/reports/*_${{ steps.datestamp.outputs.date }}.*
+
+      # (Optioneel) Commit top5_latest.csv naar 'reports' branch
+      - name: Commit top5_latest.csv to 'reports' branch
+        if: ${{ env.PUSH_REPORTS_BRANCH == 'true' }}
+        env:
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+        run: |
+          set -e
+          BR=reports
+          git checkout -B "$BR"
+          git add data/reports/top5_latest.csv || true
+          git commit -m "Update top5_latest.csv [skip ci]" || true
+          git push -u origin "$BR"
+
