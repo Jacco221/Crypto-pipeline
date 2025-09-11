@@ -1,18 +1,18 @@
 name: Daily Crypto Pipeline
 
 on:
-  # Handmatig draaien
-  workflow_dispatch:
-  # Dagelijks schema (06:00 UTC). Zet desgewenst uit of wijzig de tijd.
-  schedule:
-    - cron: "0 6 * * *"
+  workflow_dispatch: {}
+  # Optioneel: elke ochtend automatisch draaien
+  # schedule:
+  #   - cron: "0 6 * * *"   # 06:00 UTC ~ 08:00 NL-tijd
+
+permissions:
+  contents: read
+  actions: write
 
 concurrency:
   group: daily-crypto
   cancel-in-progress: false
-
-permissions:
-  contents: write   # nodig voor de optionele commit-stap
 
 jobs:
   build-and-report:
@@ -22,7 +22,8 @@ jobs:
         shell: bash
 
     steps:
-      - name: Checkout repository
+      # -------------------- SETUP --------------------
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -34,147 +35,165 @@ jobs:
 
       - name: Install dependencies
         run: |
+          set -euo pipefail
           python -m pip install -U pip
           if [ -f requirements.txt ]; then
-            python -m pip install -r requirements.txt
-          else
-            # Minimale set voor je scripts
-            python -m pip install pandas numpy requests python-dateutil
+            pip install -r requirements.txt
           fi
+          # Basis libs indien niet in requirements
+          pip install pandas numpy requests python-dateutil
 
-      - name: Prepare report dir
+      - name: Prepare directories
         run: |
+          set -euo pipefail
           mkdir -p data/reports data/state
-          echo "::group::Tree data/"
-          ls -lahR data || true
+          echo "::group::Repo tree (data/)"
+          ls -laR data/ || true
           echo "::endgroup::"
 
-      # ---- BUILD SCORES (kritiek) ----
-      - name: Build scores (CoinGecko → scores_latest.csv/json)
+      # -------------------- BUILD SCORES (FRESH + HARD CHECKS) --------------------
+      - name: Build scores (CoinGecko → scores_latest.csv/json)  # STRICT + FRESH
+        env:
+          FORCE_FRESH: "1"
         run: |
-          set -e
-          python3 scripts/build_scores.py
+          set -euo pipefail
 
-      - name: Assert scores exist (hard check)
+          echo "🧹 Clean old outputs…"
+          rm -f data/reports/scores_latest.csv data/reports/scores_latest.json || true
+          rm -f data/reports/latest.csv data/reports/latest.json || true
+
+          echo "▶️ Run build_scores.py (verbose)…"
+          python3 -u scripts/build_scores.py
+
+          echo "🔎 Diagnostics after build:"
+          ls -lh data/reports | sed -n '1,200p' || true
+          head -n 5 data/reports/scores_latest.csv || true
+
+          # Hard checks: bestanden bestaan én zijn “groot genoeg”
+          if [ ! -f data/reports/scores_latest.csv ]; then
+            echo "❌ scores_latest.csv ontbreekt"; exit 1
+          fi
+          if [ ! -f data/reports/scores_latest.json ]; then
+            echo "❌ scores_latest.json ontbreekt"; exit 1
+          fi
+
+          BYTES_CSV=$(wc -c < data/reports/scores_latest.csv || echo 0)
+          if [ "$BYTES_CSV" -lt 5000 ]; then
+            echo "❌ scores_latest.csv is te klein (${BYTES_CSV} bytes) → waarschijnlijk geen verse API-data."
+            exit 1
+          fi
+
+          echo "✅ Build scores OK (${BYTES_CSV} bytes)."
+
+      - name: Sanity: fingerprint scores_latest.csv
         run: |
-          set -e
-          test -f data/reports/scores_latest.csv || { echo "❌ scores_latest.csv ontbreekt"; exit 1; }
-          test -s data/reports/scores_latest.csv || { echo "❌ scores_latest.csv is leeg"; exit 1; }
-          # JSON optioneel maar handig voor moonshots
-          [ -f data/reports/scores_latest.json ] || echo "⚠️  scores_latest.json ontbreekt (ga door)"
+          set -euo pipefail
+          echo "🔐 Hash van scores_latest.csv:"
+          sha256sum data/reports/scores_latest.csv | tee scores.sha
+          echo "ℹ️ Als deze hash exact gelijk is aan gisteren, is er mogelijk geen nieuwe data opgehaald."
 
+      # -------------------- TOP 5 --------------------
       - name: Build top5_latest.csv & top5_latest.md
         run: |
+          set -euo pipefail
           python - <<'PY'
           import os, pandas as pd
           os.makedirs("data/reports", exist_ok=True)
           src = "data/reports/scores_latest.csv"
+          if not os.path.exists(src):
+              raise SystemExit("scores_latest.csv ontbreekt")
           df = pd.read_csv(src)
-          # Kies de eerste score-kolom die matcht
-          key = None
-          for k in ("score","Total_%","total","TOTAL_%"):
-              if k in df.columns: key = k; break
-          if key is None:
-              raise SystemExit("geen score-kolom gevonden")
-          out = df.sort_values(key, ascending=False).head(5).copy()
-          out.rename(columns={key:"score"}, inplace=True)
+
+          # zoek de kolom die de totale score representeert
+          score_key = None
+          for k in ("score","total_score","Total_%","TOTAL_%","total"):
+              if k in df.columns:
+                  score_key = k; break
+          if not score_key:
+              raise SystemExit(f"Geen score-kolom gevonden in {list(df.columns)}")
+
+          out = df.sort_values(score_key, ascending=False).head(5).copy()
+          out.rename(columns={score_key:"score"}, inplace=True)
           out.to_csv("data/reports/top5_latest.csv", index=False)
 
-          lines = [["# | Symbol | Naam | Score |"],
-                   ["--|--|--|--|"]]
-          sym = next((c for c in out.columns if c.lower()=="symbol"), out.columns[0])
-          nam = next((c for c in out.columns if c.lower()=="name"), out.columns[0])
-          for i,row in enumerate(out.itertuples(index=False),1):
-              lines.append([f"{i} | {getattr(row,sym)} | {getattr(row,nam)} | {getattr(row,'score')}"])
-          with open("data/reports/top5_latest.md","w",encoding="utf-8") as f:
-              f.write("\n".join("".join(x) for x in lines)+"\n")
+          lines=["| # | Symbol | Name | Score |",
+                 "|---:|:------|:-----|-----:|"]
+          for i, row in enumerate(out.itertuples(index=False), 1):
+              sym = getattr(row, "symbol", "") or getattr(row, "Symbol", "") or ""
+              name = getattr(row, "name", "") or getattr(row, "Name", "")
+              score = getattr(row, "score", "")
+              lines.append(f"| {i} | {sym} | {name} | {score} |")
+          with open("data/reports/top5_latest.md","w") as f:
+              f.write("\n".join(lines)+"\n")
           print("✅ top5_latest.csv & top5_latest.md gemaakt.")
           PY
 
-      - name: Annotate top5 with market regime (MA window)
+      # -------------------- MARKTREGIME (MA20) --------------------
+      - name: Annotate top5 with market regime (MA20) & advice
         run: |
+          set -euo pipefail
           if [ -f scripts/annotate_market_regime.py ]; then
-            python3 scripts/annotate_market_regime.py \
-              --out-md data/reports/top5_latest.md \
-              --window 20
+            python3 scripts/annotate_market_regime.py --window 20 --out-md data/reports/top5_latest.md
           else
-            echo "skip annotate_market_regime (script ontbreekt)"
+            echo "⚠️ scripts/annotate_market_regime.py ontbreekt — stap overgeslagen"
           fi
 
-      - name: Cooldown guard (note in MD)
+      # -------------------- COOLDOWN & ALLOCATIE --------------------
+      - name: Cooldown guard (append note in MD)
         run: |
+          set -euo pipefail
           if [ -f scripts/cooldown_guard.py ]; then
             python3 scripts/cooldown_guard.py --md data/reports/top5_latest.md || true
           else
-            echo "skip cooldown_guard (script ontbreekt)"
+            echo "ℹ️ cooldown_guard.py ontbreekt — stap overgeslagen"
           fi
 
-      - name: Allocation advice (append MD)
+      - name: Allocation advice (append to MD)
         run: |
+          set -euo pipefail
           if [ -f scripts/advise_allocation.py ]; then
-            python3 scripts/advise_allocation.py --append-md --md-file data/reports/top5_latest.md
+            python3 scripts/advise_allocation.py --append-md --md-file data/reports/top5_latest.md || true
           else
-            echo "skip advise_allocation (script ontbreekt)"
+            echo "ℹ️ advise_allocation.py ontbreekt — stap overgeslagen"
           fi
 
+      # -------------------- MOONSHOTS V2 --------------------
       - name: Run Moonshot v2 (exclude top-30 + bluechips)
         run: |
+          set -euo pipefail
           if [ -f scripts/moonshot_v2.py ]; then
             python3 scripts/moonshot_v2.py \
-              --scores-csv data/reports/scores_latest.csv \
+              --scores-csv  data/reports/scores_latest.csv \
               --scores-json data/reports/scores_latest.json \
-              --out-csv data/reports/moonshots_v2_latest.csv \
-              --out-md  data/reports/moonshots_v2_latest.md \
-              --top 5 \
+              --out-csv     data/reports/moonshots_v2_latest.csv \
+              --out-md      data/reports/moonshots_v2_latest.md \
+              --top 10 \
               --min-volume 1.0 \
               --exclude-top-rank 30 \
               --exclude-bluechips
           else
-            echo "skip moonshot_v2 (script ontbreekt)"
+            echo "ℹ️ moonshot_v2.py ontbreekt — stap overgeslagen"
           fi
 
-      - name: Datestamp (UTC)
-        id: datestamp
-        run: echo "date=$(date -u +%F)" >> "$GITHUB_OUTPUT"
-
+      # -------------------- DATED COPIES --------------------
       - name: Add dated copies (YYYY-MM-DD, UTC)
         run: |
-          d="${{ steps.datestamp.outputs.date }}"
-          for f in latest.csv latest.json \
-                   scores_latest.csv scores_latest.json \
-                   top5_latest.csv top5_latest.md \
-                   moonshots_v2_latest.csv moonshots_v2_latest.md
-          do
-            [ -f "data/reports/$f" ] && cp "data/reports/$f" "data/reports/${f%.*}_$d.${f##*.}"
-          done
-          echo "📦 Dated copies toegevoegd voor $d"
+          set -euo pipefail
+          d=$(date -u +%F)
+          cp data/reports/scores_latest.csv        "data/reports/scores_${d}.csv" || true
+          cp data/reports/scores_latest.json       "data/reports/scores_${d}.json" || true
+          cp data/reports/top5_latest.csv          "data/reports/top5_${d}.csv" || true
+          cp data/reports/top5_latest.md           "data/reports/top5_${d}.md" || true
+          cp data/reports/moonshots_v2_latest.csv  "data/reports/moonshots_v2_${d}.csv" || true
+          cp data/reports/moonshots_v2_latest.md   "data/reports/moonshots_v2_${d}.md" || true
 
+      # -------------------- ARTIFACT UPLOAD --------------------
       - name: Upload reports artifact
         uses: actions/upload-artifact@v4
         with:
           name: reports
-          if-no-files-found: warn
-          retention-days: 14
           path: |
-            data/reports/latest.*
-            data/reports/scores_latest.*
-            data/reports/top5_latest.*
-            data/reports/moonshots_v2_latest.*
-            data/reports/*_${{ steps.datestamp.outputs.date }}.*
-
-      # (Optioneel) Commit top5_latest.csv naar 'reports' branch
-      - name: Commit top5_latest.csv to 'reports' branch
-        if: ${{ env.PUSH_REPORTS_BRANCH == 'true' }}
-        env:
-          GIT_AUTHOR_NAME: github-actions[bot]
-          GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
-          GIT_COMMITTER_NAME: github-actions[bot]
-          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
-        run: |
-          set -e
-          BR=reports
-          git checkout -B "$BR"
-          git add data/reports/top5_latest.csv || true
-          git commit -m "Update top5_latest.csv [skip ci]" || true
-          git push -u origin "$BR"
+            data/reports/**
+          if-no-files-found: error
+          retention-days: 14
 
