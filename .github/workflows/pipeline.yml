@@ -1,199 +1,111 @@
-name: Daily Crypto Pipeline
+name: Crypto Pipeline
 
 on:
-  workflow_dispatch: {}
-  # Optioneel: elke ochtend automatisch draaien
-  # schedule:
-  #   - cron: "0 6 * * *"   # 06:00 UTC ~ 08:00 NL-tijd
+  workflow_dispatch:
+  schedule:
+    # 06:00 NL-tijd = 04:00 UTC
+    - cron: "0 4 * * *"
 
 permissions:
   contents: read
-  actions: write
 
 concurrency:
-  group: daily-crypto
+  group: crypto-pipeline-main
   cancel-in-progress: false
 
-jobs:
-  build-and-report:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        shell: bash
+env:
+  TZ: Europe/Amsterdam
+  PYTHONUNBUFFERED: "1"
 
+jobs:
+  build-and-publish-reports:
+    runs-on: ubuntu-latest
     steps:
-      # -------------------- SETUP --------------------
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
       - name: Install dependencies
         run: |
-          set -euo pipefail
-          python -m pip install -U pip
+          python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then
             pip install -r requirements.txt
-          fi
-          # Basis libs indien niet in requirements
-          pip install pandas numpy requests python-dateutil
-
-      - name: Prepare directories
-        run: |
-          set -euo pipefail
-          mkdir -p data/reports data/state
-          echo "::group::Repo tree (data/)"
-          ls -laR data/ || true
-          echo "::endgroup::"
-
-      # -------------------- BUILD SCORES (FRESH + HARD CHECKS) --------------------
-      - name: Build scores (CoinGecko → scores_latest.csv/json)  # STRICT + FRESH
-        env:
-          FORCE_FRESH: "1"
-        run: |
-          set -euo pipefail
-
-          echo "🧹 Clean old outputs…"
-          rm -f data/reports/scores_latest.csv data/reports/scores_latest.json || true
-          rm -f data/reports/latest.csv data/reports/latest.json || true
-
-          echo "▶️ Run build_scores.py (verbose)…"
-          python3 -u scripts/build_scores.py
-
-          echo "🔎 Diagnostics after build:"
-          ls -lh data/reports | sed -n '1,200p' || true
-          head -n 5 data/reports/scores_latest.csv || true
-
-          # Hard checks: bestanden bestaan én zijn “groot genoeg”
-          if [ ! -f data/reports/scores_latest.csv ]; then
-            echo "❌ scores_latest.csv ontbreekt"; exit 1
-          fi
-          if [ ! -f data/reports/scores_latest.json ]; then
-            echo "❌ scores_latest.json ontbreekt"; exit 1
-          fi
-
-          BYTES_CSV=$(wc -c < data/reports/scores_latest.csv || echo 0)
-          if [ "$BYTES_CSV" -lt 5000 ]; then
-            echo "❌ scores_latest.csv is te klein (${BYTES_CSV} bytes) → waarschijnlijk geen verse API-data."
-            exit 1
-          fi
-
-          echo "✅ Build scores OK (${BYTES_CSV} bytes)."
-
-      - name: Sanity: fingerprint scores_latest.csv
-        run: |
-          set -euo pipefail
-          echo "🔐 Hash van scores_latest.csv:"
-          sha256sum data/reports/scores_latest.csv | tee scores.sha
-          echo "ℹ️ Als deze hash exact gelijk is aan gisteren, is er mogelijk geen nieuwe data opgehaald."
-
-      # -------------------- TOP 5 --------------------
-      - name: Build top5_latest.csv & top5_latest.md
-        run: |
-          set -euo pipefail
-          python - <<'PY'
-          import os, pandas as pd
-          os.makedirs("data/reports", exist_ok=True)
-          src = "data/reports/scores_latest.csv"
-          if not os.path.exists(src):
-              raise SystemExit("scores_latest.csv ontbreekt")
-          df = pd.read_csv(src)
-
-          # zoek de kolom die de totale score representeert
-          score_key = None
-          for k in ("score","total_score","Total_%","TOTAL_%","total"):
-              if k in df.columns:
-                  score_key = k; break
-          if not score_key:
-              raise SystemExit(f"Geen score-kolom gevonden in {list(df.columns)}")
-
-          out = df.sort_values(score_key, ascending=False).head(5).copy()
-          out.rename(columns={score_key:"score"}, inplace=True)
-          out.to_csv("data/reports/top5_latest.csv", index=False)
-
-          lines=["| # | Symbol | Name | Score |",
-                 "|---:|:------|:-----|-----:|"]
-          for i, row in enumerate(out.itertuples(index=False), 1):
-              sym = getattr(row, "symbol", "") or getattr(row, "Symbol", "") or ""
-              name = getattr(row, "name", "") or getattr(row, "Name", "")
-              score = getattr(row, "score", "")
-              lines.append(f"| {i} | {sym} | {name} | {score} |")
-          with open("data/reports/top5_latest.md","w") as f:
-              f.write("\n".join(lines)+"\n")
-          print("✅ top5_latest.csv & top5_latest.md gemaakt.")
-          PY
-
-      # -------------------- MARKTREGIME (MA20) --------------------
-      - name: Annotate top5 with market regime (MA20) & advice
-        run: |
-          set -euo pipefail
-          if [ -f scripts/annotate_market_regime.py ]; then
-            python3 scripts/annotate_market_regime.py --window 20 --out-md data/reports/top5_latest.md
           else
-            echo "⚠️ scripts/annotate_market_regime.py ontbreekt — stap overgeslagen"
+            pip install pandas numpy requests
           fi
 
-      # -------------------- COOLDOWN & ALLOCATIE --------------------
-      - name: Cooldown guard (append note in MD)
+      - name: Ensure scripts are executable
         run: |
-          set -euo pipefail
-          if [ -f scripts/cooldown_guard.py ]; then
-            python3 scripts/cooldown_guard.py --md data/reports/top5_latest.md || true
-          else
-            echo "ℹ️ cooldown_guard.py ontbreekt — stap overgeslagen"
-          fi
+          chmod +x scripts/*.sh || true
 
-      - name: Allocation advice (append to MD)
+      - name: Create reports folder
+        run: mkdir -p data/reports
+
+      # ========= Build scores =========
+      - name: Build scores (CoinGecko)
         run: |
-          set -euo pipefail
-          if [ -f scripts/advise_allocation.py ]; then
-            python3 scripts/advise_allocation.py --append-md --md-file data/reports/top5_latest.md || true
-          else
-            echo "ℹ️ advise_allocation.py ontbreekt — stap overgeslagen"
-          fi
+          python3 scripts/build_scores.py
 
-      # -------------------- MOONSHOTS V2 --------------------
-      - name: Run Moonshot v2 (exclude top-30 + bluechips)
+      # ========= Kraken-only scores =========
+      - name: Scores → Kraken-only
         run: |
-          set -euo pipefail
-          if [ -f scripts/moonshot_v2.py ]; then
-            python3 scripts/moonshot_v2.py \
-              --scores-csv  data/reports/scores_latest.csv \
-              --scores-json data/reports/scores_latest.json \
-              --out-csv     data/reports/moonshots_v2_latest.csv \
-              --out-md      data/reports/moonshots_v2_latest.md \
-              --top 10 \
-              --min-volume 1.0 \
-              --exclude-top-rank 30 \
-              --exclude-bluechips
-          else
-            echo "ℹ️ moonshot_v2.py ontbreekt — stap overgeslagen"
-          fi
+          python3 scripts/filter_kraken.py \
+            --scores-csv data/reports/scores_latest.csv \
+            --out-csv    data/reports/scores_kraken_latest.csv \
+            --out-md     data/reports/scores_kraken_latest.md \
+            --quotes USD,EUR,USDT,USDC --top 200 --exclude-top-rank 30 --exclude-bluechips
 
-      # -------------------- DATED COPIES --------------------
-      - name: Add dated copies (YYYY-MM-DD, UTC)
+      # ========= Moonshots (Kraken-only) =========
+      - name: Moonshots (Kraken-only)
         run: |
-          set -euo pipefail
-          d=$(date -u +%F)
-          cp data/reports/scores_latest.csv        "data/reports/scores_${d}.csv" || true
-          cp data/reports/scores_latest.json       "data/reports/scores_${d}.json" || true
-          cp data/reports/top5_latest.csv          "data/reports/top5_${d}.csv" || true
-          cp data/reports/top5_latest.md           "data/reports/top5_${d}.md" || true
-          cp data/reports/moonshots_v2_latest.csv  "data/reports/moonshots_v2_${d}.csv" || true
-          cp data/reports/moonshots_v2_latest.md   "data/reports/moonshots_v2_${d}.md" || true
+          python3 scripts/moonshot_v2.py \
+            --scores-csv data/reports/scores_latest.csv \
+            --out-csv    data/reports/moonshots_kraken_latest.csv \
+            --out-md     data/reports/moonshots_kraken_latest.md \
+            --top 10 --exclude-top-rank 30 --exclude-bluechips \
+            --kraken-only --quotes USD,EUR,USDT,USDC
 
-      # -------------------- ARTIFACT UPLOAD --------------------
+      # ========= Market regime + cooldown + allocatie =========
+      - name: Market regime
+        run: |
+          python3 scripts/annotate_market_regime.py --out-md data/reports/top5_latest.md --window 20 --days 120
+
+      - name: Cooldown guard
+        run: |
+          python3 scripts/cooldown_guard.py --md data/reports/top5_latest.md
+
+      - name: Advise allocation
+        run: |
+          python3 scripts/advise_allocation.py \
+            --top5 data/reports/top5_latest.csv \
+            --out  data/reports/allocation_latest.json \
+            --append-md --md-file data/reports/top5_latest.md
+
+      # ========= Upload artifacts =========
       - name: Upload reports artifact
         uses: actions/upload-artifact@v4
         with:
           name: reports
+          if-no-files-found: warn
+          retention-days: 7
           path: |
-            data/reports/**
-          if-no-files-found: error
-          retention-days: 14
+            data/reports/scores_latest.*
+            data/reports/top5_latest.md
+            data/reports/latest.*
+            data/reports/scores_kraken_latest.*
+            data/reports/moonshots_v2_latest.*
+            data/reports/moonshots_kraken_latest.*
+            data/reports/allocation_latest.json
 
