@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Build a minimal Top-5 CSV (symbol,score) from scores_latest.csv.
+Build Top-5 CSV (symbol,Total_%) from scores_latest.csv.
 
 - Normalise kolommen (symbol, Total_%).
-- Sluit optioneel top-30 marketcap en bluechips uit (consistent met pipeline).
-- Output exact: symbol,score (lowercase headers).
+- Optionele filters: exclude top-30 marketcap en bluechips.
+- Output exact: symbol,Total_% (matching advise_allocation.py).
 """
 
 import argparse
@@ -26,37 +26,38 @@ def pick(df: pd.DataFrame, cands):
     for c in cands:
         if c.lower() in lower:
             return lower[c.lower()]
-    raise SystemExit(f"Kolom niet gevonden (proberen: {cands}) in {list(df.columns)}")
+    raise SystemExit(f"Kolom niet gevonden (probeerde: {cands}) in {list(df.columns)}")
 
 def main():
     ap = argparse.ArgumentParser(description="Maak top5_latest.csv vanuit scores_latest.csv")
     ap.add_argument("--scores-csv", default="data/reports/scores_latest.csv")
     ap.add_argument("--out-csv",    default="data/reports/top5_latest.csv")
-    ap.add_argument("--exclude-top-rank", type=int, default=30, help="exclude marketcap top-N (default 30)")
-    ap.add_argument("--exclude-bluechips", action="store_true", help="bluechips uitsluiten")
-    ap.add_argument("--top", type=int, default=5, help="aantal regels in output (default 5)")
+    ap.add_argument("--exclude-top-rank", type=int, default=30)
+    ap.add_argument("--exclude-bluechips", action="store_true")
+    ap.add_argument("--top", type=int, default=5)
     args = ap.parse_args()
 
-    src = Path(args.scores_csv)
-    out = Path(args.out_csv)
+    src = Path(args.scores_csv); out = Path(args.out_csv)
     out.parent.mkdir(parents=True, exist_ok=True)
 
     df = pd.read_csv(src)
 
+    # normaliseer kolomnamen
     sym = pick(df, ["symbol","Symbol"])
-    tot = pick(df, ["Total_%","TOTAL_%","total"])
+    tot = pick(df, ["Total_%","TOTAL_%","total","score"])
     df = df.rename(columns={sym:"symbol", tot:"Total_%"})
     df["symbol"] = df["symbol"].astype(str).str.upper()
+    df["Total_%"] = pd.to_numeric(df["Total_%"], errors="coerce")
 
+    # filters
     if "rank" in df.columns and args.exclude_top_rank is not None:
         df["rank"] = pd.to_numeric(df["rank"], errors="coerce")
         df = df[(df["rank"].isna()) | (df["rank"] > float(args.exclude_top_rank))]
     if args.exclude_bluechips:
         df = df[~df["symbol"].isin(BLUECHIPS)]
 
-    df = df.sort_values("Total_%", ascending=False).head(args.top)
-    out_df = pd.DataFrame({"symbol": df["symbol"].values,
-                           "score":  pd.to_numeric(df["Total_%"], errors="coerce").round(2).values})
+    out_df = df.sort_values("Total_%", ascending=False).head(args.top)[["symbol","Total_%"]]
+    out_df["Total_%"] = out_df["Total_%"].round(2)
     out_df.to_csv(out, index=False)
     print(f"✅ geschreven: {out.resolve()}  ({len(out_df)} regels)")
 
