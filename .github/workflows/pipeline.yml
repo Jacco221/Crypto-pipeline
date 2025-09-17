@@ -3,7 +3,7 @@ name: Crypto Pipeline
 on:
   workflow_dispatch:
   schedule:
-    # 06:00 NL-tijd = 04:00 UTC
+    # 06:00 NL = 04:00 UTC
     - cron: "0 4 * * *"
 
 permissions:
@@ -46,17 +46,17 @@ jobs:
             pip install pandas numpy requests
           fi
 
-      - name: Ensure scripts are executable
+      - name: Create reports folder
+        run: mkdir -p data/reports && chmod -R 777 data || true
+
+      - name: Ensure scripts executable
         run: chmod +x scripts/*.sh || true
 
-      - name: Create reports folder
-        run: mkdir -p data/reports
-
-      # ===== Build scores =====
+      # ========== Scores ==========
       - name: Build scores (CoinGecko)
         run: python3 scripts/build_scores.py
 
-      # ===== Kraken-only scores =====
+      # ========== Scores → Kraken ==========
       - name: Scores → Kraken-only
         run: |
           python3 scripts/filter_kraken.py \
@@ -65,7 +65,16 @@ jobs:
             --out-md     data/reports/scores_kraken_latest.md \
             --quotes USD,EUR,USDT,USDC --top 200 --exclude-top-rank 30 --exclude-bluechips
 
-      # ===== Moonshots (Kraken-only) =====
+      # ========== Moonshots v2 (algemeen) ==========
+      - name: Moonshots v2 (universe)
+        run: |
+          python3 scripts/moonshot_v2.py \
+            --scores-csv data/reports/scores_latest.csv \
+            --out-csv    data/reports/moonshots_v2_latest.csv \
+            --out-md     data/reports/moonshots_v2_latest.md \
+            --top 10 --exclude-top-rank 30 --exclude-bluechips --quotes USD,EUR,USDT,USDC
+
+      # ========== Moonshots (Kraken-only) ==========
       - name: Moonshots (Kraken-only)
         run: |
           python3 scripts/moonshot_v2.py \
@@ -75,14 +84,14 @@ jobs:
             --top 10 --exclude-top-rank 30 --exclude-bluechips \
             --kraken-only --quotes USD,EUR,USDT,USDC
 
-      # ===== Market regime + cooldown =====
+      # ========== Regime + cooldown ==========
       - name: Market regime
         run: python3 scripts/annotate_market_regime.py --out-md data/reports/top5_latest.md --window 20 --days 120
 
       - name: Cooldown guard
         run: python3 scripts/cooldown_guard.py --md data/reports/top5_latest.md
 
-      # ===== Top-5 CSV voor allocatie (BELANGRIJK) =====
+      # ========== Top-5 CSV ==========
       - name: Build Top-5 (CSV)
         run: |
           python3 scripts/build_top5_csv.py \
@@ -91,11 +100,11 @@ jobs:
             --exclude-top-rank 30 --exclude-bluechips --top 5
           test -s data/reports/top5_latest.csv && echo "✅ top5_latest.csv aangemaakt"
 
-      # ===== Allocatie (met fallback) =====
+      # ========== Allocatie ==========
       - name: Advise allocation
         run: |
           if [ ! -s data/reports/top5_latest.csv ]; then
-            echo "⚠️  top5_latest.csv ontbreekt – fallback bouwen..."
+            echo "⚠️  Fallback: maak top5_latest.csv"
             python3 scripts/build_top5_csv.py \
               --scores-csv data/reports/scores_latest.csv \
               --out-csv    data/reports/top5_latest.csv \
@@ -106,24 +115,28 @@ jobs:
             --out  data/reports/allocation_latest.json \
             --append-md --md-file data/reports/top5_latest.md
 
-      # ===== Validate Kraken files =====
-      - name: Validate Kraken reports
+      # ========== Validatie ==========
+      - name: Validate outputs (incl. moonshots)
         run: |
+          set -e
           for f in \
             data/reports/scores_kraken_latest.csv \
             data/reports/scores_kraken_latest.md \
+            data/reports/moonshots_v2_latest.csv \
+            data/reports/moonshots_v2_latest.md \
             data/reports/moonshots_kraken_latest.csv \
-            data/reports/moonshots_kraken_latest.md
+            data/reports/moonshots_kraken_latest.md \
+            data/reports/top5_latest.csv \
+            data/reports/allocation_latest.json
           do
             if [ ! -s "$f" ]; then
-              echo "❌ Ontbrekend of leeg: $f"
-              exit 1
+              echo "❌ Ontbrekend of leeg: $f"; exit 1
             else
-              echo "✅ OK: $f ($(wc -l < "$f") regels)"
+              echo "✅ OK: $f ($(wc -l < "$f" 2>/dev/null || echo 0) regels)"
             fi
           done
 
-      # ===== Upload artifacts =====
+      # ========== Artifact ==========
       - name: Upload reports artifact
         uses: actions/upload-artifact@v4
         with:
