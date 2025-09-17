@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-import argparse, json, re, sys
+
+import argparse
+import json
+import re
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
 
 def parse_args():
     p = argparse.ArgumentParser()
@@ -16,6 +22,7 @@ def parse_args():
     p.add_argument("--mark-as_switched", action="store_true", help="Sla 'nu' als wisselmoment op")
     return p.parse_args()
 
+
 def load_state(fp: Path) -> dict:
     if fp.exists():
         try:
@@ -24,29 +31,30 @@ def load_state(fp: Path) -> dict:
             return {}
     return {}
 
+
 def save_state(fp: Path, state: dict):
     fp.parent.mkdir(parents=True, exist_ok=True)
     fp.write_text(json.dumps(state, indent=2), encoding="utf-8")
 
+
 def parse_advantage(md_text: str) -> float | None:
-    # zoekt “voordeel: 88.4%” (maakt niet uit of het in Advies-regel of elders staat)
+    # zoekt “voordeel: 88.4%”
     m = re.search(r"voordeel:\s*([0-9]+(?:\.[0-9]+)?)\s*%", md_text, re.IGNORECASE)
     return float(m.group(1)) if m else None
+
 
 def ensure_cooldown_note(md_text: str, note_line: str) -> str:
     lines = md_text.splitlines()
     try:
-        h_idx = next(i for i,l in enumerate(lines) if l.strip().lower().startswith("### cooldown"))
+        h_idx = next(i for i, l in enumerate(lines) if l.strip().lower().startswith("### cooldown"))
     except StopIteration:
-        # hoofdstuk ontbreekt: aan einde toevoegen
         if lines and lines[-1].strip():
             lines.append("")
         lines.append("### Cooldown")
-        h_idx = len(lines)-1
-    # verwijder bestaande bullet(s) direct onder de header
+        h_idx = len(lines) - 1
+    # verwijder bestaande bullets direct onder de header
     i = h_idx + 1
     while i < len(lines) and (lines[i].startswith("- ") or lines[i].startswith("• ") or not lines[i].strip()):
-        # laat eventuele lege regel(s) onder de header staan
         if not lines[i].strip():
             i += 1
             break
@@ -54,8 +62,21 @@ def ensure_cooldown_note(md_text: str, note_line: str) -> str:
     lines.insert(i, f"- {note_line}")
     return "\n".join(lines) + ("\n" if not md_text.endswith("\n") else "")
 
+
 def to_aware(dt: datetime) -> datetime:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def parse_iso_aware(s: str | None) -> datetime | None:
+    """Robuuste parser: ondersteunt 'Z' (UTC) en retourneert None bij ongeldige input."""
+    if not s:
+        return None
+    try:
+        s2 = s.strip().replace("Z", "+00:00")
+        return datetime.fromisoformat(s2)
+    except Exception:
+        return None
+
 
 def main() -> int:
     args = parse_args()
@@ -74,9 +95,10 @@ def main() -> int:
 
     # lees md
     md_text = md_file.read_text(encoding="utf-8")
-    # lees vorige wissel
+
+    # lees vorige wissel (tolerant voor 'Z' en ongeldige waarden)
     last_switch = state.get("last_switch")
-    last_dt = to_aware(datetime.fromisoformat(last_switch)) if last_switch else None
+    last_dt = parse_iso_aware(last_switch)
 
     # standaard: wissel toegestaan
     allowed = True
@@ -105,11 +127,12 @@ def main() -> int:
         if new_md != md_text:
             md_file.write_text(new_md, encoding="utf-8")
     except Exception as e:
-        # Fail-safe: voeg korte melding toe onderaan
         md_file.write_text(md_text + f"\n\n*⚠️ Cooldown guard gaf een fout: {e}*\n", encoding="utf-8")
 
-    print("✅", note)
+    print("✅ " + note)
     return 0
+
 
 if __name__ == "__main__":
     sys.exit(main())
+
