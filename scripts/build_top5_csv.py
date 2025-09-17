@@ -3,9 +3,9 @@
 """
 Build a minimal Top-5 CSV (symbol,score) from scores_latest.csv.
 
-- Normalise kolomnamen (symbol, Total_%).
-- Optioneel: sluit top-30 marketcap en bluechips uit (zoals je pipeline).
-- Schrijft exact de kolommen: symbol,score  (lowercase headers).
+- Normalise kolommen (symbol, Total_%).
+- Sluit optioneel top-30 marketcap en bluechips uit (consistent met pipeline).
+- Output exact: symbol,score (lowercase headers).
 """
 
 import argparse
@@ -43,29 +43,22 @@ def main():
 
     df = pd.read_csv(src)
 
-    # normaliseer kolommen
     sym = pick(df, ["symbol","Symbol"])
     tot = pick(df, ["Total_%","TOTAL_%","total"])
     df = df.rename(columns={sym:"symbol", tot:"Total_%"})
     df["symbol"] = df["symbol"].astype(str).str.upper()
 
-    # optionele filters (zoals in je pipeline)
     if "rank" in df.columns and args.exclude_top_rank is not None:
-        df = df[(df["rank"].isna()) | (pd.to_numeric(df["rank"], errors="coerce") > float(args.exclude_top_rank))]
+        df["rank"] = pd.to_numeric(df["rank"], errors="coerce")
+        df = df[(df["rank"].isna()) | (df["rank"] > float(args.exclude_top_rank))]
     if args.exclude_bluechips:
         df = df[~df["symbol"].isin(BLUECHIPS)]
 
-    # sorteer en neem top-N
     df = df.sort_values("Total_%", ascending=False).head(args.top)
-
-    # schrijf exact symbol,score
-    out_df = pd.DataFrame({
-        "symbol": df["symbol"].values,
-        "score":  pd.to_numeric(df["Total_%"], errors="coerce").round(2).values
-    })
+    out_df = pd.DataFrame({"symbol": df["symbol"].values,
+                           "score":  pd.to_numeric(df["Total_%"], errors="coerce").round(2).values})
     out_df.to_csv(out, index=False)
     print(f"✅ geschreven: {out.resolve()}  ({len(out_df)} regels)")
 
 if __name__ == "__main__":
     main()
-
