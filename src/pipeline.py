@@ -1,202 +1,273 @@
 # src/pipeline.py
 """
-Pipeline orchestratie — scoort alle coins en combineert signalen.
+Pipeline orchestratie — scoort alle coins via bulk API calls.
 
-Dit is het ontbrekende hart van de pipeline. Voorheen bestond dit
-module niet, waardoor run.py altijd terugviel op scores_latest.csv.
+Ontwerp: minimaal aantal API calls voor maximale snelheid.
+- CoinGecko /coins/markets: 1 call per 250 coins (bevat prijs, volume, 7d/30d changes, sparkline)
+- Macro (DXY + F&G + BTC Dom): 3 calls totaal
+- Geen per-coin API calls nodig!
 
-Score-architectuur (verbeterd):
-    TA       (35%): MA cross, volume trend, funding rate
-    Momentum (25%): RS vs BTC 7d + 30d (continu)
+Score-architectuur:
+    TA       (35%): MA7 cross (sparkline), volume trend
+    Momentum (25%): RS vs BTC 7d + 30d (uit bulk price changes)
     Macro    (25%): DXY + Fear&Greed + BTC Dominance
-    (Liquiditeit kan later toegevoegd worden als Kraken API actief is)
-
-Totaal: gewogen gemiddelde [0..1], gerapporteerd als percentage.
 """
 from __future__ import annotations
 
+import math
 import sys
 import time
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
 
-from src.universe import get_top_coins
-from src.ta import compute_ta, _clamp01
-from src.rs import rs_combined
+from src.ta import _clamp01, weighted_group_score
 from src.macro import macro_combined
 from src.utils import get
 
 
 # ---------------------------------------------------------------------------
-# OHLCV ophalen voor een coin (CoinGecko)
+# Bulk data ophalen (1 API call per 250 coins)
 # ---------------------------------------------------------------------------
 
-def _fetch_ohlcv(coin_id: str) -> Optional[pd.DataFrame]:
+STABLES = {"usdt", "usdc", "busd", "dai", "tusd", "usde", "usdp", "fdusd", "pyusd"}
+
+
+def _fetch_markets_bulk(limit: int = 150) -> List[dict]:
     """
-    Haal OHLCV-data op via CoinGecko market_chart endpoint (prijzen + volumes).
-    Gebruikt 365 dagen voor voldoende data voor MA200.
+    Haal alle coin-data op in bulk via /coins/markets.
+    Inclusief sparkline (7d), price changes (1h/24h/7d/30d), volume.
+    Max 250 per pagina.
     """
-    try:
-        url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
-        params = {"vs_currency": "usd", "days": "365", "interval": "daily"}
-        data = get(url, params=params)
+    all_coins: List[dict] = []
+    per_page = min(limit + 20, 250)  # extra marge voor stablecoins die we uitfilteren
+    pages = max(1, (limit + per_page - 1) // per_page)
 
-        prices = data.get("prices", [])
-        volumes = data.get("total_volumes", [])
-        if not prices:
-            return None
-
-        # Bouw DataFrame van prijzen
-        pdf = pd.DataFrame(prices, columns=["ts", "close"])
-        pdf["ts"] = pd.to_datetime(pdf["ts"], unit="ms").dt.normalize()
-        pdf = pdf.set_index("ts").groupby(level=0).last()
-
-        # Voeg volume toe
-        if volumes:
-            vdf = pd.DataFrame(volumes, columns=["ts", "volume"])
-            vdf["ts"] = pd.to_datetime(vdf["ts"], unit="ms").dt.normalize()
-            vdf = vdf.set_index("ts").groupby(level=0).last()
-            pdf = pdf.join(vdf, how="left")
-            pdf["volume"] = pdf["volume"].fillna(0)
-        else:
-            pdf["volume"] = 0
-
-        # open/high/low zijn niet beschikbaar via market_chart,
-        # maar ta.py gebruikt alleen close en volume
-        pdf["open"] = pdf["close"]
-        pdf["high"] = pdf["close"]
-        pdf["low"] = pdf["close"]
-
-        return pdf.sort_index()
-    except Exception as e:
-        print(f"  [WARN] OHLCV fetch mislukt voor {coin_id}: {e}", file=sys.stderr)
-        return None
-
-
-# ---------------------------------------------------------------------------
-# Score een enkele coin
-# ---------------------------------------------------------------------------
-
-def _score_coin(coin: dict, macro_data: dict) -> Optional[dict]:
-    """
-    Bereken de totaalscore voor een enkele coin.
-
-    Score-gewichten:
-        TA:       35%
-        Momentum: 25%  (RS vs BTC)
-        Macro:    25%  (DXY + FG + BTC Dom — gedeeld over alle coins)
-    """
-    coin_id = coin["id"]
-    symbol = coin["symbol"]
-
-    try:
-        # 1. TA score
-        ohlcv = _fetch_ohlcv(coin_id)
-        if ohlcv is not None and len(ohlcv) >= 10:
-            ta = compute_ta(ohlcv)
-            ta_score = ta["ta_score"]
-            ta_ma = ta["ma_crossover"]
-            ta_vol = ta["volume_trend"]
-            ta_fund = ta["funding_rate"]
-        else:
-            ta_score = 0.0
-            ta_ma = 0.0
-            ta_vol = 0.5
-            ta_fund = 0.5
-
-        # 2. RS score (7d + 30d gecombineerd)
-        rs = rs_combined(coin_id)
-        rs_score = rs["rs_score"]
-
-        # 3. Macro score (al berekend, zelfde voor alle coins)
-        macro_score = macro_data["macro_score"]
-
-        # 4. Totaalscore
-        total = (
-            0.35 * ta_score +
-            0.25 * rs_score +
-            0.25 * macro_score
-        )
-        # Resterende 15% is gereserveerd voor liquiditeits-score (Kraken)
-        # Voorlopig verdelen we die over de andere componenten
-        total = total / 0.85  # normaliseer naar [0..1]
-        total = _clamp01(total)
-
-        return {
-            "symbol": symbol,
-            "name": coin["name"],
-            "ta_ma": round(ta_ma, 4),
-            "ta_volume": round(ta_vol, 4),
-            "ta_funding": round(ta_fund, 4),
-            "TA_%": round(ta_score * 100, 1),
-            "RS_7d_%": round(rs["rs_7d"] * 100, 1),
-            "RS_30d_%": round(rs["rs_30d"] * 100, 1),
-            "Momentum_%": round(rs_score * 100, 1),
-            "DXY_%": round(macro_data["dxy_score"] * 100, 1),
-            "FG_%": round(macro_data["fg_score"] * 100, 1),
-            "BTC_Dom_%": round(macro_data["btc_dom_score"] * 100, 1),
-            "Macro_%": round(macro_score * 100, 1),
-            "Total_%": round(total * 100, 1),
-            "score": round(total, 4),
+    for page in range(1, pages + 1):
+        url = "https://api.coingecko.com/api/v3/coins/markets"
+        params = {
+            "vs_currency": "usd",
+            "order": "market_cap_desc",
+            "per_page": per_page,
+            "page": page,
+            "sparkline": "true",
+            "price_change_percentage": "1h,24h,7d,14d,30d",
         }
-    except Exception as e:
-        print(f"  [WARN] Score mislukt voor {symbol}: {e}", file=sys.stderr)
-        return None
+        data = get(url, params=params)
+        if not isinstance(data, list):
+            break
+
+        for coin in data:
+            sym = (coin.get("symbol") or "").lower()
+            if sym in STABLES:
+                continue
+            all_coins.append(coin)
+            if len(all_coins) >= limit:
+                break
+
+        if len(all_coins) >= limit:
+            break
+        time.sleep(1)  # kleine pauze tussen pagina's
+
+    return all_coins
+
+
+# ---------------------------------------------------------------------------
+# TA scoring vanuit bulk data (geen extra API calls)
+# ---------------------------------------------------------------------------
+
+def _ta_from_sparkline(coin: dict) -> Dict[str, float]:
+    """
+    Bereken TA-subscores uit sparkline (7d) en volume data.
+
+    MA7 crossover: vergelijk huidige prijs vs 7d gemiddelde (uit sparkline)
+    Volume trend:  24h volume vs market cap ratio (liquiditeitsmetriek)
+    """
+    sparkline = coin.get("sparkline_in_7d", {}).get("price", [])
+
+    # MA7 crossover uit sparkline
+    if len(sparkline) >= 24:  # minimaal 1 dag aan data
+        prices = np.array(sparkline, dtype=float)
+        current = prices[-1]
+        ma7 = np.mean(prices)  # gemiddelde over 7 dagen = MA7
+
+        # Vergelijk ook met MA van eerste helft (proxy voor langere trend)
+        half = len(prices) // 2
+        ma_first_half = np.mean(prices[:half])
+        ma_second_half = np.mean(prices[half:])
+
+        # MA crossover: hoe ver boven/onder het gemiddelde
+        if ma7 > 0:
+            cross = (current - ma7) / ma7
+            ma_cross = (math.tanh(5 * cross) + 1.0) / 2.0
+        else:
+            ma_cross = 0.5
+
+        # Trend: stijgt het gemiddelde?
+        if ma_first_half > 0:
+            trend = (ma_second_half - ma_first_half) / ma_first_half
+            trend_score = (math.tanh(10 * trend) + 1.0) / 2.0
+        else:
+            trend_score = 0.5
+    else:
+        ma_cross = 0.5
+        trend_score = 0.5
+
+    # Volume ratio (hoge volume/mcap = meer actief verhandeld)
+    volume = coin.get("total_volume") or 0
+    mcap = coin.get("market_cap") or 1
+    vol_ratio = volume / mcap if mcap > 0 else 0
+    # Typisch 0.01-0.20; map naar [0..1] met cap op 0.3
+    volume_score = _clamp01(vol_ratio / 0.15)
+
+    # Samengestelde TA
+    subs = {"ma_crossover": ma_cross, "trend": trend_score, "volume": volume_score}
+    weights = {"ma_crossover": 0.40, "trend": 0.35, "volume": 0.25}
+    ta_score = _clamp01(weighted_group_score(subs, weights))
+
+    return {
+        "ta_ma": round(ma_cross, 4),
+        "ta_trend": round(trend_score, 4),
+        "ta_volume": round(volume_score, 4),
+        "ta_score": round(ta_score, 4),
+    }
+
+
+# ---------------------------------------------------------------------------
+# RS scoring vanuit bulk data (geen extra API calls)
+# ---------------------------------------------------------------------------
+
+def _sigmoid(diff: float, sensitivity: float = 10.0) -> float:
+    return 1.0 / (1.0 + math.exp(-sensitivity * diff))
+
+
+def _rs_from_bulk(coin: dict, btc_7d: float, btc_30d: float) -> Dict[str, float]:
+    """
+    RS vs BTC uit de price_change_percentage velden.
+    Continue sigmoid mapping.
+    """
+    coin_7d = coin.get("price_change_percentage_7d_in_currency") or 0.0
+    coin_30d = coin.get("price_change_percentage_30d_in_currency") or 0.0
+
+    # Verschil in procentpunten, gedeeld door 100 voor fractie
+    diff_7d = (coin_7d - btc_7d) / 100.0
+    diff_30d = (coin_30d - btc_30d) / 100.0
+
+    rs_7d = _sigmoid(diff_7d)
+    rs_30d = _sigmoid(diff_30d)
+
+    # Gewogen: 30d zwaarder (stabielere trend)
+    rs_score = 0.4 * rs_7d + 0.6 * rs_30d
+
+    return {
+        "rs_7d": round(rs_7d, 4),
+        "rs_30d": round(rs_30d, 4),
+        "rs_score": round(rs_score, 4),
+        "rs_diff_7d": round(diff_7d, 4),
+        "rs_diff_30d": round(diff_30d, 4),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Score een coin uit bulk data
+# ---------------------------------------------------------------------------
+
+def _score_coin_bulk(coin: dict, btc_7d: float, btc_30d: float,
+                     macro_data: dict) -> dict:
+    """Score een coin volledig uit bulk-data, zonder extra API calls."""
+    symbol = (coin.get("symbol") or "").upper()
+    name = coin.get("name", symbol)
+
+    # 1. TA
+    ta = _ta_from_sparkline(coin)
+
+    # 2. Momentum (RS vs BTC)
+    rs = _rs_from_bulk(coin, btc_7d, btc_30d)
+
+    # 3. Macro (gedeeld)
+    macro_score = macro_data["macro_score"]
+
+    # 4. Totaalscore
+    total = (
+        0.35 * ta["ta_score"] +
+        0.25 * rs["rs_score"] +
+        0.25 * macro_score
+    )
+    total = total / 0.85  # normaliseer (15% reserve)
+    total = _clamp01(total)
+
+    return {
+        "symbol": symbol,
+        "name": name,
+        "ta_ma": ta["ta_ma"],
+        "ta_trend": ta["ta_trend"],
+        "ta_volume": ta["ta_volume"],
+        "TA_%": round(ta["ta_score"] * 100, 1),
+        "RS_7d_%": round(rs["rs_7d"] * 100, 1),
+        "RS_30d_%": round(rs["rs_30d"] * 100, 1),
+        "Momentum_%": round(rs["rs_score"] * 100, 1),
+        "DXY_%": round(macro_data["dxy_score"] * 100, 1),
+        "FG_%": round(macro_data["fg_score"] * 100, 1),
+        "BTC_Dom_%": round(macro_data["btc_dom_score"] * 100, 1),
+        "Macro_%": round(macro_score * 100, 1),
+        "Total_%": round(total * 100, 1),
+        "score": round(total, 4),
+    }
 
 
 # ---------------------------------------------------------------------------
 # Pipeline entry point
 # ---------------------------------------------------------------------------
 
-def build_scores(limit: int = 50) -> pd.DataFrame:
+def build_scores(limit: int = 150) -> pd.DataFrame:
     """
-    Volledige scoring pipeline:
-    1. Haal top coins op (universe)
-    2. Bereken macro (1x, gedeeld)
-    3. Score elke coin individueel
-    4. Retourneer DataFrame gesorteerd op score
+    Volledige scoring pipeline via bulk API calls.
 
-    Dit is de functie die run.py aanroept via compute_scores_via_internal_modules().
+    API calls totaal: ~4-5 (ongeacht aantal coins)
+    - 1x /coins/markets (tot 250 coins)
+    - 1x Stooq DXY
+    - 1x alternative.me Fear & Greed
+    - 1x CoinGecko /global (BTC Dominance)
+
+    Geschatte runtime: 5-15 seconden.
     """
-    print(f"[Pipeline] Start scoring voor top {limit} coins...")
+    print(f"[Pipeline] Start bulk scoring voor top {limit} coins...")
     start = time.time()
 
-    # 1. Universe
-    coins = get_top_coins(limit=limit)
-    print(f"[Pipeline] {len(coins)} coins opgehaald uit CoinGecko universe")
+    # 1. Bulk market data (1 API call)
+    print("[Pipeline] Bulk market data ophalen...")
+    coins = _fetch_markets_bulk(limit=limit)
+    print(f"[Pipeline] {len(coins)} coins opgehaald")
 
-    # 2. Macro (1x berekenen, geldt voor alle coins)
-    print("[Pipeline] Macro-indicatoren berekenen (DXY + Fear&Greed + BTC Dominance)...")
+    if not coins:
+        raise RuntimeError("Geen coins opgehaald van CoinGecko.")
+
+    # 2. BTC price changes (nodig als benchmark voor RS)
+    btc_coin = next((c for c in coins if (c.get("symbol") or "").lower() == "btc"), None)
+    btc_7d = btc_coin.get("price_change_percentage_7d_in_currency", 0.0) if btc_coin else 0.0
+    btc_30d = btc_coin.get("price_change_percentage_30d_in_currency", 0.0) if btc_coin else 0.0
+    print(f"[Pipeline] BTC benchmark: 7d={btc_7d:+.1f}%, 30d={btc_30d:+.1f}%")
+
+    # 3. Macro (3 API calls totaal)
+    print("[Pipeline] Macro-indicatoren berekenen...")
     macro_data = macro_combined()
     print(f"  DXY:  {macro_data['dxy_score']:.2f}  |  "
           f"F&G:  {macro_data['fg_score']:.2f}  |  "
           f"BTC Dom: {macro_data['btc_dom_pct']:.1f}% (score: {macro_data['btc_dom_score']:.2f})  |  "
           f"Macro totaal: {macro_data['macro_score']:.2f}")
 
-    # 3. Score elke coin
+    # 4. Score alle coins (geen extra API calls)
+    print("[Pipeline] Scoring...")
     results: List[dict] = []
-    for i, coin in enumerate(coins):
-        print(f"  [{i+1}/{len(coins)}] {coin['symbol']}...", end=" ", flush=True)
-        row = _score_coin(coin, macro_data)
-        if row:
-            results.append(row)
-            print(f"score={row['Total_%']:.1f}%")
-        else:
-            print("SKIP")
-
-        # Rate limit bescherming (CoinGecko free: ~10-30 calls/min)
-        # Per coin: ~3 API calls (OHLCV + RS 7d + RS 30d)
-        time.sleep(4)
-
-    if not results:
-        raise RuntimeError("Geen enkele coin kon gescoord worden.")
+    for coin in coins:
+        row = _score_coin_bulk(coin, btc_7d, btc_30d, macro_data)
+        results.append(row)
 
     df = pd.DataFrame(results)
     df = df.sort_values("score", ascending=False).reset_index(drop=True)
 
     elapsed = time.time() - start
-    print(f"[Pipeline] Klaar in {elapsed:.0f}s — {len(df)} coins gescoord")
+    print(f"[Pipeline] Klaar in {elapsed:.1f}s — {len(df)} coins gescoord")
 
     return df
