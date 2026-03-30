@@ -188,26 +188,89 @@ def determine_action(reports_dir: Path) -> dict:
                 if target_coin and sym == target_coin.upper():
                     target_score = score
 
+    # ---- DIP ANALYSE meewegen ----
+    # Als er een sterke dip is die beter scoort dan de pipeline top coin,
+    # gebruik die als target (contraire instap).
+    dip_target = None
+    dip_reason = ""
+    if best_dip:
+        dip_sym = best_dip.get("symbol", "").upper()
+        dip_score = float(best_dip.get("dip_score", 0))
+        dip_7d = best_dip.get("chg_7d_%", "?")
+        dip_24h = best_dip.get("chg_24h_%", "?")
+
+        # Dip is interessant als:
+        # 1. Score >= 0.7 (al gefilterd)
+        # 2. Het niet je huidige coin is
+        # 3. Het niet de pipeline top coin is (anders dubbel)
+        is_current = current and dip_sym == current["symbol"].upper()
+        is_target = target_coin and dip_sym == target_coin.upper()
+
+        if not is_current and not is_target and dip_score >= 0.7:
+            dip_target = dip_sym
+            dip_reason = (
+                f"Dip-kans: {dip_sym} (dip score {dip_score:.2f}, "
+                f"7d: {dip_7d}%, 24h: {dip_24h}%) — "
+                f"sterke daling zonder tekenen van slecht nieuws."
+            )
+        elif is_current:
+            # Je zit al in de dip-coin — dat is goed, houd vast
+            dip_reason = (
+                f"Je zit al in dip-kans {dip_sym} "
+                f"(dip score {dip_score:.2f}). Goed — houd vast."
+            )
+
+    result["dip_target"] = dip_target
+    result["dip_reason"] = dip_reason
+
+    # ---- BESLISLOGICA ----
+
     # Zit je al in de top coin?
     if current and target_coin:
         if current["symbol"].upper() == target_coin.upper():
-            result["action"] = "HOLD"
-            result["reason"] = (
+            hold_reason = (
                 f"Regime is {regime}. Je zit al in {current['symbol']} "
-                f"(top coin, score {target_score*100:.1f}%). Geen actie nodig."
+                f"(top coin, score {target_score*100:.1f}%)."
             )
+            # Maar is er een betere dip-kans?
+            if dip_target:
+                # Check cooldown voor switch naar dip
+                switch = should_switch(current_score, 0.8)  # dip = hoge urgentie
+                if switch["switch"]:
+                    result["action"] = "SWITCH"
+                    result["target"] = dip_target
+                    result["reason"] = (
+                        f"{hold_reason} Maar: {dip_reason} "
+                        f"Overweeg switch naar dip-kans."
+                    )
+                    return result
+
+            result["action"] = "HOLD"
+            result["reason"] = hold_reason
+            if dip_reason:
+                result["reason"] += f" {dip_reason}"
             return result
 
-        # Andere coin → check of switchen zinvol is (cooldown + voordeel)
+        # Andere coin → check of switchen zinvol is
+        # Kies beste target: pipeline top coin OF dip-kans
+        best_target = target_coin
+        best_reason = f"Pipeline adviseert {target_coin}"
+        if dip_target:
+            # Dip-kans krijgt voorrang als dip_score > 0.8
+            dip_s = float(best_dip.get("dip_score", 0)) if best_dip else 0
+            if dip_s >= 0.8:
+                best_target = dip_target
+                best_reason = dip_reason
+
         switch = should_switch(current_score, target_score)
         result["switch_analysis"] = switch
 
         if switch["switch"]:
             result["action"] = "SWITCH"
-            result["target"] = target_coin
+            result["target"] = best_target
             result["reason"] = (
                 f"Regime is {regime}. {switch['reason']} "
-                f"Switch {current['symbol']} → {target_coin}."
+                f"{best_reason}. Switch {current['symbol']} → {best_target}."
             )
         else:
             result["action"] = "HOLD"
@@ -215,17 +278,35 @@ def determine_action(reports_dir: Path) -> dict:
                 f"Regime is {regime}. Blijf in {current['symbol']}. "
                 f"{switch['reason']}"
             )
+            if dip_reason:
+                result["reason"] += f" (Dip info: {dip_reason})"
 
-    elif not current and usd_balance > DUST_THRESHOLD_USD and target_coin:
-        result["action"] = "BUY"
-        result["target"] = target_coin
-        result["reason"] = (
-            f"Regime is {regime}. Je hebt ${usd_balance:.2f} beschikbaar. "
-            f"Pipeline adviseert {target_coin} (score {target_score*100:.1f}%)."
-        )
+    elif not current and usd_balance > DUST_THRESHOLD_USD:
+        # Geen positie, USD beschikbaar → koop pipeline top OF dip-kans
+        buy_target = target_coin
+        buy_reason = f"Pipeline adviseert {target_coin} (score {target_score*100:.1f}%)"
+
+        if dip_target:
+            dip_s = float(best_dip.get("dip_score", 0)) if best_dip else 0
+            if dip_s >= 0.8 or not target_coin:
+                buy_target = dip_target
+                buy_reason = dip_reason
+
+        if buy_target:
+            result["action"] = "BUY"
+            result["target"] = buy_target
+            result["reason"] = (
+                f"Regime is {regime}. Je hebt ${usd_balance:.2f} beschikbaar. "
+                f"{buy_reason}"
+            )
+        else:
+            result["action"] = "HOLD"
+            result["reason"] = f"Regime is {regime}. Geen duidelijk koopadvies."
     else:
         result["action"] = "HOLD"
         result["reason"] = f"Regime is {regime}. Geen duidelijke actie."
+        if dip_reason:
+            result["reason"] += f" (Dip info: {dip_reason})"
 
     return result
 
