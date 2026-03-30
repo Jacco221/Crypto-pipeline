@@ -19,6 +19,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -182,6 +183,102 @@ def send_regime_change(old_regime: str, new_regime: str,
     )
 
     return send_message(msg)
+
+
+# ---------------------------------------------------------------------------
+# Trade voorstel via Telegram
+# ---------------------------------------------------------------------------
+
+def send_trade_proposal(plan: dict) -> bool:
+    """Stuur trade-voorstel naar Telegram voor bevestiging."""
+    if "error" in plan:
+        return send_message(f"❌ Trade fout: {plan['error']}")
+
+    sell = plan["step1_sell"]
+    buy = plan["step2_buy"]
+
+    msg = (
+        f"💱 <b>Trade Voorstel</b>\n\n"
+        f"<b>Stap 1 — Verkoop:</b>\n"
+        f"  {sell['volume']:.4f} {plan['current']} → ${sell['net_usd']:.2f}\n"
+        f"  Prijs: ${sell['price']:.4f} | Fee: ${sell['fee_usd']:.2f}\n\n"
+        f"<b>Stap 2 — Koop:</b>\n"
+        f"  ~{buy['est_coins']:.4f} {plan['target']} met ${buy['usd_amount']:.2f}\n"
+        f"  Prijs: ${buy['price']:.4f} | Fee: ${buy['fee_usd']:.2f}\n\n"
+        f"<b>Totale fee:</b> ${plan['total_fee_usd']:.2f}\n\n"
+        f"Stuur <b>JA</b> om uit te voeren of <b>NEE</b> om te annuleren."
+    )
+
+    return send_message(msg)
+
+
+def send_trade_result(result: dict) -> bool:
+    """Stuur trade-resultaat naar Telegram."""
+    if "error" in result:
+        return send_message(f"❌ Trade mislukt: {result['error']}")
+
+    msg = (
+        f"✅ <b>Trade Uitgevoerd!</b>\n\n"
+        f"Verkocht: {result['sold']}\n"
+        f"Gekocht: {result['bought']}\n\n"
+        f"Sell TX: {', '.join(result.get('sell_txids', []))}\n"
+        f"Buy TX: {', '.join(result.get('buy_txids', []))}"
+    )
+
+    return send_message(msg)
+
+
+def send_balance(balance_text: str) -> bool:
+    """Stuur account balans naar Telegram."""
+    msg = f"💰 <b>Kraken Balans</b>\n\n<pre>{balance_text}</pre>"
+    return send_message(msg)
+
+
+def check_confirmation(timeout_seconds: int = 300) -> Optional[str]:
+    """
+    Wacht op bevestiging via Telegram (JA/NEE).
+    Pollt de bot voor nieuwe berichten.
+    Timeout na 5 minuten.
+    """
+    if not BOT_TOKEN:
+        return None
+
+    start = time.time()
+    last_update_id = 0
+
+    # Haal eerst bestaande updates op om ze te skippen
+    try:
+        r = requests.get(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates",
+            params={"timeout": 1}, timeout=10
+        )
+        data = r.json()
+        if data.get("result"):
+            last_update_id = data["result"][-1]["update_id"]
+    except Exception:
+        pass
+
+    while time.time() - start < timeout_seconds:
+        try:
+            r = requests.get(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates",
+                params={"offset": last_update_id + 1, "timeout": 10},
+                timeout=15
+            )
+            data = r.json()
+            for update in data.get("result", []):
+                last_update_id = update["update_id"]
+                msg = update.get("message", {})
+                text = (msg.get("text") or "").strip().upper()
+                chat_id = str(msg.get("chat", {}).get("id", ""))
+
+                if chat_id == CHAT_ID and text in ("JA", "NEE", "YES", "NO"):
+                    return text
+
+        except Exception:
+            time.sleep(5)
+
+    return None  # timeout
 
 
 # ---------------------------------------------------------------------------
