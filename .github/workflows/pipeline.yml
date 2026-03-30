@@ -13,6 +13,8 @@ env:
   PYTHONUNBUFFERED: "1"
   COOL_DOWN_DAYS: "2.0"     # koeltijd in dagen
   BIG_ADV_PCT:   "5.0"      # voordeel (%) om koeltijd te mogen overriden
+  TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+  TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
 
 jobs:
   run:
@@ -35,7 +37,7 @@ jobs:
 
       - name: Run pipeline (maakt CSV's in data/reports)
         run: |
-          python3 run.py --limit 50 --reports-dir data/reports --fee-bps 52
+          python3 run.py --limit 150 --reports-dir data/reports --fee-bps 52
           echo "---- Listing data/reports ----"
           ls -lah data/reports || true
 
@@ -81,6 +83,11 @@ jobs:
       - name: Run dip finder
         run: |
           python3 -m src.dip_finder --limit 150 --top 10 --reports-dir data/reports || true
+
+      - name: Send Telegram daily summary
+        if: always()
+        run: |
+          python3 -m src.notify --daily --dips --reports-dir data/reports || true
 
       - name: Upload reports as artifact
         uses: actions/upload-artifact@v4
