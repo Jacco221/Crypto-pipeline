@@ -88,6 +88,14 @@ jobs:
         run: |
           python3 -m src.notify --daily --dips --reports-dir data/reports || true
 
+      - name: Trade advisor (voorstel via Telegram)
+        if: always()
+        env:
+          KRAKEN_API_KEY: ${{ secrets.KRAKEN_API_KEY }}
+          KRAKEN_API_SECRET: ${{ secrets.KRAKEN_API_SECRET }}
+        run: |
+          python3 scripts/trade_advisor.py --reports-dir data/reports --propose-only || true
+
       - name: Upload reports as artifact
         uses: actions/upload-artifact@v4
         with:

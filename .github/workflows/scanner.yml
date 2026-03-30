@@ -49,3 +49,10 @@ jobs:
       - name: Send Telegram alerts (alleen bij kansen)
         run: |
           python3 -m src.notify --dips --reports-dir data/reports || true
+
+      - name: Trade advisor (voorstel via Telegram)
+        env:
+          KRAKEN_API_KEY: ${{ secrets.KRAKEN_API_KEY }}
+          KRAKEN_API_SECRET: ${{ secrets.KRAKEN_API_SECRET }}
+        run: |
+          python3 scripts/trade_advisor.py --reports-dir data/reports --propose-only || true
