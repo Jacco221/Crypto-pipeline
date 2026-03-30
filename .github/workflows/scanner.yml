@@ -1,0 +1,51 @@
+name: Dip & Regime Scanner
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: "5 10 * * *"    # 12:05 NL-tijd (zomer)
+    - cron: "5 14 * * *"    # 16:05 NL-tijd
+    - cron: "5 18 * * *"    # 20:05 NL-tijd
+
+# De ochtend-scan (08:05) zit al in de volledige pipeline
+
+env:
+  PYTHONUNBUFFERED: "1"
+  TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+  TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run dip finder
+        run: |
+          python3 -m src.dip_finder --limit 150 --top 10 --reports-dir data/reports
+
+      - name: Check market regime
+        run: |
+          python3 -c "
+          from src.market_regime import determine_market_regime
+          import json
+          result = determine_market_regime()
+          print(json.dumps(result, indent=2))
+          with open('data/reports/regime_latest.json', 'w') as f:
+              json.dump(result, f, indent=2)
+          "
+
+      - name: Send Telegram alerts (alleen bij kansen)
+        run: |
+          python3 -m src.notify --dips --reports-dir data/reports || true
