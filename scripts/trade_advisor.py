@@ -23,6 +23,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from src.kraken import get_balance, find_usd_pair, plan_switch, execute_switch, get_ticker
 from src.notify import send_message, send_trade_proposal, send_trade_result, check_confirmation
+from src.state import (load_position, save_position, clear_position,
+                       is_cooldown_active, should_switch, hours_since_entry)
 
 
 # ---------------------------------------------------------------------------
@@ -147,7 +149,16 @@ def determine_action(reports_dir: Path) -> dict:
         "usd_available": round(usd_balance, 2),
     }
 
-    # RISK_OFF → alles naar stablecoin
+    # 6. Check positie-state (wanneer zijn we ingestapt?)
+    position = load_position()
+    hours_in = hours_since_entry()
+    cooldown = is_cooldown_active()
+
+    result["position_state"] = position
+    result["hours_in_position"] = round(hours_in, 1) if hours_in else None
+    result["cooldown_active"] = cooldown
+
+    # ===== RISK_OFF → alles naar stablecoin (cooldown negeren, veiligheid eerst) =====
     if regime == "RISK_OFF":
         if current and current["est_usd"] > DUST_THRESHOLD_USD:
             result["action"] = "SELL_TO_STABLE"
@@ -160,27 +171,57 @@ def determine_action(reports_dir: Path) -> dict:
             result["reason"] = "Regime is RISK_OFF. Je zit al in stablecoins. Geen actie nodig."
         return result
 
-    # RISK_ON of CAUTIOUS → kijk of we moeten switchen of kopen
+    # ===== RISK_ON of CAUTIOUS =====
+
+    # Scores ophalen voor cooldown-check
+    scores_path = reports_dir / "scores_latest.csv"
+    current_score = 0.0
+    target_score = 0.0
+    if scores_path.exists():
+        import csv
+        with open(scores_path) as f:
+            for row in csv.DictReader(f):
+                sym = row.get("symbol", "").upper()
+                score = float(row.get("score", 0))
+                if current and sym == current["symbol"].upper():
+                    current_score = score
+                if target_coin and sym == target_coin.upper():
+                    target_score = score
+
+    # Zit je al in de top coin?
     if current and target_coin:
         if current["symbol"].upper() == target_coin.upper():
             result["action"] = "HOLD"
             result["reason"] = (
                 f"Regime is {regime}. Je zit al in {current['symbol']} "
-                f"(top coin). Geen actie nodig."
+                f"(top coin, score {target_score*100:.1f}%). Geen actie nodig."
             )
-        else:
+            return result
+
+        # Andere coin → check of switchen zinvol is (cooldown + voordeel)
+        switch = should_switch(current_score, target_score)
+        result["switch_analysis"] = switch
+
+        if switch["switch"]:
             result["action"] = "SWITCH"
             result["target"] = target_coin
             result["reason"] = (
-                f"Regime is {regime}. Pipeline adviseert {target_coin} "
-                f"maar je zit in {current['symbol']}. Overweeg te switchen."
+                f"Regime is {regime}. {switch['reason']} "
+                f"Switch {current['symbol']} → {target_coin}."
             )
+        else:
+            result["action"] = "HOLD"
+            result["reason"] = (
+                f"Regime is {regime}. Blijf in {current['symbol']}. "
+                f"{switch['reason']}"
+            )
+
     elif not current and usd_balance > DUST_THRESHOLD_USD and target_coin:
         result["action"] = "BUY"
         result["target"] = target_coin
         result["reason"] = (
             f"Regime is {regime}. Je hebt ${usd_balance:.2f} beschikbaar. "
-            f"Pipeline adviseert {target_coin}."
+            f"Pipeline adviseert {target_coin} (score {target_score*100:.1f}%)."
         )
     else:
         result["action"] = "HOLD"
@@ -239,6 +280,7 @@ def run_advisor(reports_dir: Path, auto_execute: bool = False) -> None:
         if response in ("JA", "YES"):
             from src.kraken import place_market_order
             result = place_market_order(pair, "sell", current["amount"])
+            clear_position()  # Positie gewist → in stablecoins
             send_trade_result({
                 "status": "COMPLETED",
                 "sold": f"{current['amount']:.4f} {current['symbol']}",
@@ -259,6 +301,12 @@ def run_advisor(reports_dir: Path, auto_execute: bool = False) -> None:
                 send_message(f"❌ Trade planning mislukt: {plan['error']}")
                 return
 
+            # Voeg cooldown info toe aan voorstel
+            hours = action.get("hours_in_position")
+            if hours:
+                cooldown_note = f"\n⏱ In {current['symbol']} sinds {hours:.0f}h geleden"
+                plan["summary"] += cooldown_note
+
             send_trade_proposal(plan)
 
             if auto_execute:
@@ -268,6 +316,12 @@ def run_advisor(reports_dir: Path, auto_execute: bool = False) -> None:
             response = check_confirmation(timeout_seconds=300)
             if response in ("JA", "YES"):
                 result = execute_switch(current["symbol"], target)
+                if result.get("status") == "COMPLETED":
+                    # Update state: we zitten nu in target
+                    ticker = get_ticker(find_usd_pair(target) or "")
+                    save_position(target, ticker.get("last", 0),
+                                  plan["step2_buy"].get("usd_amount", 0),
+                                  source="pipeline")
                 send_trade_result(result)
             else:
                 send_message("❌ Trade geannuleerd.")
@@ -300,6 +354,10 @@ def run_advisor(reports_dir: Path, auto_execute: bool = False) -> None:
             if response in ("JA", "YES"):
                 from src.kraken import place_market_order
                 result = place_market_order(pair, "buy", usd)
+                # Update state: we zitten nu in target
+                ticker = get_ticker(pair)
+                save_position(target, ticker.get("last", 0), usd,
+                              source="dip_finder" if action.get("best_dip") else "pipeline")
                 send_trade_result({
                     "status": "COMPLETED",
                     "sold": f"${usd:.2f} USD",
