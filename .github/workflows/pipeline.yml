@@ -78,6 +78,10 @@ jobs:
             --out data/reports/allocation_latest.json \
             --append-md --md-file data/reports/top5_latest.md || true
 
+      - name: Run dip finder
+        run: |
+          python3 -m src.dip_finder --limit 150 --top 10 --reports-dir data/reports || true
+
       - name: Upload reports as artifact
         uses: actions/upload-artifact@v4
         with:
@@ -90,6 +94,8 @@ jobs:
             data/reports/top5_latest.md
             data/reports/top5_latest.csv
             data/reports/allocation_latest.json
+            data/reports/dips_latest.md
+            data/reports/dips_latest.csv
 
       # ===== Optioneel: commit alleen top5_latest.csv naar branch 'reports' =====
       - name: Commit top5_latest.csv to 'reports' branch
