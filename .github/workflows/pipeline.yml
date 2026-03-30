@@ -1,0 +1,128 @@
+name: Daily Crypto Pipeline
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: "5 6 * * *"     # Dagelijks 06:05 UTC (08:05 NL-tijd zomer)
+    - cron: "15 6 * * *"    # optioneel 06:15 UTC tweede poging
+
+permissions:
+  contents: write
+
+env:
+  PYTHONUNBUFFERED: "1"
+  COOL_DOWN_DAYS: "2.0"     # koeltijd in dagen
+  BIG_ADV_PCT:   "5.0"      # voordeel (%) om koeltijd te mogen overriden
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run pipeline (maakt CSV's in data/reports)
+        run: |
+          python3 run.py --limit 50 --reports-dir data/reports --fee-bps 52
+          echo "---- Listing data/reports ----"
+          ls -lah data/reports || true
+
+      - name: Build top5_latest.csv from scores_latest.csv
+        run: |
+          python3 - <<'PY'
+          import csv
+          rows = list(csv.reader(open('data/reports/scores_latest.csv', newline='')))
+          top = [rows[0]] + rows[1:6]
+          with open('data/reports/top5_latest.csv', 'w', newline='') as f:
+              csv.writer(f).writerows(top)
+          print("Wrote data/reports/top5_latest.csv")
+          PY
+
+      - name: Annotate top5 with market regime & advice
+        run: |
+          python3 scripts/annotate_market_regime.py data/reports/top5_latest.md
+
+      # ===== NIEUW: cooldown-check =====
+      - name: Cooldown guard (blokkeer te snelle wissel → voeg notitie toe)
+        run: |
+          mkdir -p data/state
+          set -e
+          # Probeer guard; mislukt (=cooldown blokkeert), dan noteer dat in het rapport en ga door
+          python3 scripts/cooldown_guard.py \
+            --md data/reports/top5_latest.md \
+            --state data/state/last_switch.json \
+            --cooldown-days ${COOL_DOWN_DAYS} \
+            --big-advantage ${BIG_ADV_PCT} \
+          || {
+            echo "" >> data/reports/top5_latest.md
+            echo "### Cooldown" >> data/reports/top5_latest.md
+            echo "> ⚠️ Wissel geblokkeerd door cooldown van ${COOL_DOWN_DAYS} dagen (override bij ≥ ${BIG_ADV_PCT}% voordeel)." >> data/reports/top5_latest.md
+          }
+
+      - name: Run allocation advisor
+        run: |
+          python3 scripts/advise_allocation.py \
+            --top5 data/reports/top5_latest.csv \
+            --out data/reports/allocation_latest.json \
+            --append-md --md-file data/reports/top5_latest.md || true
+
+      - name: Upload reports as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: reports
+          path: |
+            data/reports/latest.csv
+            data/reports/latest.json
+            data/reports/scores_latest.csv
+            data/reports/scores_latest.json
+            data/reports/top5_latest.md
+            data/reports/top5_latest.csv
+            data/reports/allocation_latest.json
+
+      # ===== Optioneel: commit alleen top5_latest.csv naar branch 'reports' =====
+      - name: Commit top5_latest.csv to 'reports' branch
+        if: always() && false
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f data/reports/top5_latest.csv ]; then
+            echo "top5_latest.csv ontbreekt; skip commit."
+            exit 0
+          fi
+
+          TMP="/tmp/reports"
+          rm -rf "$TMP" && mkdir -p "$TMP"
+          cp -f data/reports/top5_latest.csv "$TMP/top5_latest.csv"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          if git show-ref --verify --quiet refs/remotes/origin/reports; then
+            git checkout -B reports origin/reports
+          else
+            git checkout -B reports
+          fi
+
+          mkdir -p data/reports
+          mv -f "$TMP/top5_latest.csv" data/reports/top5_latest.csv
+          git add data/reports/top5_latest.csv
+
+          if git diff --cached --quiet; then
+            echo "Geen wijzigingen; skip commit."
+          else
+            git commit -m "Update top5_latest.csv ($(date -u +%Y-%m-%dT%H:%M:%SZ))"
+            git push origin reports
+          fi
+

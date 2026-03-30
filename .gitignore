@@ -1,0 +1,19 @@
+# macOS
+.DS_Store
+
+# Python venv
+.venv/
+
+# Editor/backup
+*.save
+
+# Pipeline artefacten (worden als GH Actions artifacts bewaard)
+data/reports/*.csv
+data/reports/*.json
+data/reports/*.md
+data/state/
+
+# Claude local settings
+.claude/
+
+Crypto analyse tool - Crypto marktindicatoren uitleg_files/

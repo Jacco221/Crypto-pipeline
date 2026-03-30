@@ -1,0 +1,9 @@
+requests
+pandas
+numpy
+pytrends
+python-dateutil
+tomli
+
+# Pretty tables for pandas.to_markdown
+Tabulate>=0.9.0
