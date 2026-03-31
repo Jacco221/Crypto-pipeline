@@ -139,7 +139,7 @@ def send_dip_alert(reports_dir: Path, min_score: float = 0.7) -> bool:
     if not alerts:
         return False  # geen alert nodig
 
-    prio_emoji = {"A": "🔴", "B": "🟡", "C": "⚪"}
+    prio_emoji = {"A": "🟢", "B": "🟡", "C": "⚪"}
 
     lines = ""
     for r in alerts[:5]:
@@ -155,7 +155,7 @@ def send_dip_alert(reports_dir: Path, min_score: float = 0.7) -> bool:
         f"🔔 <b>Dip Alert!</b>\n\n"
         f"{len(alerts)} coin(s) met dip-kans:\n\n"
         f"{lines}\n"
-        f"🔴 A = sterke kans | 🟡 B = matig | ⚪ C = watchlist\n"
+        f"🟢 A = sterke kans | 🟡 B = matig | ⚪ C = watchlist\n"
         f"Check de details en overweeg instappen als regime het toelaat."
     )
 

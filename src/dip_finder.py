@@ -218,6 +218,7 @@ def _classify_priority(score: float, iso: float, rec: float,
     """
     if score >= 0.7 and iso >= 0.4 and rec >= 0.3:
         return "A"  # Sterke kans
+
     elif score >= 0.5 and (iso >= 0.3 or chg_7d <= -20):
         return "B"  # Matige kans
     else:
