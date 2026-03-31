@@ -55,4 +55,4 @@ jobs:
           KRAKEN_API_KEY: ${{ secrets.KRAKEN_API_KEY }}
           KRAKEN_API_SECRET: ${{ secrets.KRAKEN_API_SECRET }}
         run: |
-          python3 scripts/trade_advisor.py --reports-dir data/reports --propose-only || true
+          python3 scripts/trade_advisor.py --reports-dir data/reports || true

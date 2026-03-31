@@ -80,15 +80,18 @@ def _fetch_btc_prices(days: int = 300) -> pd.Series:
 
 def determine_market_regime(
     days: int = 300,
-    short_ma: int = 7,
+    short_ma: int = 20,
     long_ma: int = 200,
 ) -> Dict[str, Any]:
     """
-    Bepaalt marktregime met drie niveaus:
+    Bepaalt marktregime met drie niveaus.
+
+    MA20 i.p.v. MA7 voor regime (minder ruis, minder false signals).
+    TA scoring gebruikt nog steeds MA7 voor snelle coin-selectie.
 
     Score-systeem (0-4 punten):
-        +1 als BTC > MA7
-        +1 als MA7 > MA200
+        +1 als BTC > MA20
+        +1 als MA20 > MA200
         +1 als Fear & Greed > 25 (niet extreme angst)
         +1 als DXY dalend (SMA10 < SMA30)
 
@@ -118,11 +121,11 @@ def determine_market_regime(
             "source": "CoinGecko",
         }
 
-    ma7 = _sma(s, short_ma)
+    ma_short = _sma(s, short_ma)
     ma200 = _sma(s, long_ma)
 
     last_close = float(s.iloc[-1])
-    last_ma7 = float(ma7.iloc[-1])
+    last_ma_short = float(ma_short.iloc[-1])
     last_ma200 = float(ma200.iloc[-1])
 
     # Score-systeem
@@ -130,16 +133,16 @@ def determine_market_regime(
     signals = {}
 
     # 1. BTC boven MA7
-    btc_above_ma7 = last_close > last_ma7
-    if btc_above_ma7:
+    btc_above_ma = last_close > last_ma_short
+    if btc_above_ma:
         regime_score += 1
-    signals["btc_above_ma7"] = btc_above_ma7
+    signals["btc_above_ma20"] = btc_above_ma
 
-    # 2. MA7 boven MA200
-    ma7_above_ma200 = last_ma7 > last_ma200
-    if ma7_above_ma200:
+    # 2. MA20 boven MA200
+    ma_above_ma200 = last_ma_short > last_ma200
+    if ma_above_ma200:
         regime_score += 1
-    signals["ma7_above_ma200"] = ma7_above_ma200
+    signals["ma20_above_ma200"] = ma_above_ma200
 
     # 3. Fear & Greed niet in extreme angst
     try:
@@ -182,7 +185,7 @@ def determine_market_regime(
         "signals": signals,
         "as_of": dt.utcnow().isoformat(timespec="seconds") + "Z",
         "last_close": round(last_close, 2),
-        "ma7": round(last_ma7, 2),
+        "ma20": round(last_ma_short, 2),
         "ma200": round(last_ma200, 2),
         "rule": "score>=3->RISK_ON, ==2->CAUTIOUS, <=1->RISK_OFF",
         "source": "CoinGecko + alternative.me + Stooq",

@@ -315,7 +315,7 @@ def determine_action(reports_dir: Path) -> dict:
 # Hoofdflow
 # ---------------------------------------------------------------------------
 
-def run_advisor(reports_dir: Path, auto_execute: bool = False) -> None:
+def run_advisor(reports_dir: Path) -> None:
     """
     Volledige advisor flow:
     1. Analyseer situatie
@@ -352,9 +352,6 @@ def run_advisor(reports_dir: Path, auto_execute: bool = False) -> None:
         )
         send_message(msg)
 
-        if auto_execute:
-            return  # in GitHub Actions wachten we niet op antwoord
-
         # Wacht op bevestiging
         print("[Advisor] Wacht op Telegram bevestiging (5 min)...")
         response = check_confirmation(timeout_seconds=300)
@@ -390,9 +387,6 @@ def run_advisor(reports_dir: Path, auto_execute: bool = False) -> None:
 
             send_trade_proposal(plan)
 
-            if auto_execute:
-                return
-
             print("[Advisor] Wacht op Telegram bevestiging (5 min)...")
             response = check_confirmation(timeout_seconds=300)
             if response in ("JA", "YES"):
@@ -427,9 +421,6 @@ def run_advisor(reports_dir: Path, auto_execute: bool = False) -> None:
             )
             send_message(msg)
 
-            if auto_execute:
-                return
-
             print("[Advisor] Wacht op Telegram bevestiging (5 min)...")
             response = check_confirmation(timeout_seconds=300)
             if response in ("JA", "YES"):
@@ -458,8 +449,7 @@ if __name__ == "__main__":
     import argparse
     ap = argparse.ArgumentParser(description="Trade Advisor")
     ap.add_argument("--reports-dir", type=str, default="data/reports")
-    ap.add_argument("--propose-only", action="store_true",
-                    help="Stuur alleen voorstel, wacht niet op bevestiging")
+    # Trade advisor wacht altijd op Telegram bevestiging (5 min timeout)
     args = ap.parse_args()
 
-    run_advisor(Path(args.reports_dir), auto_execute=args.propose_only)
+    run_advisor(Path(args.reports_dir))

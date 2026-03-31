@@ -42,11 +42,11 @@ def main():
     regime = info["regime"]
     asof = info["as_of"]
     last_close = info.get("last_close")
-    ma7 = info.get("ma7")
+    ma20 = info.get("ma20")
     ma200 = info.get("ma200")
 
     regime_score = info.get("regime_score", "?")
-    regime_line = f"> Market regime: {regime} (score {regime_score}/4, as of {asof}, BTC={last_close}, MA7={ma7}, MA200={ma200})"
+    regime_line = f"> Market regime: {regime} (score {regime_score}/4, as of {asof}, BTC={last_close}, MA20={ma20}, MA200={ma200})"
 
     if regime == "RISK_OFF":
         advice_line = "> Advies: STABLECOIN (risk-off; geen nieuwe posities)"

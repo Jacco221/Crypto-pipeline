@@ -257,21 +257,21 @@ def score_coin_on_day(symbol: str, coin_df: pd.DataFrame, btc_df: pd.DataFrame,
 
 def compute_regime_on_day(btc_df: pd.DataFrame, day_idx: int,
                           fg_value: int, dxy_bullish: bool) -> Tuple[str, int]:
-    """Bereken market regime op een specifieke dag."""
+    """Bereken market regime op een specifieke dag (MA20 voor stabiliteit)."""
     closes = btc_df["close"].values
     if day_idx < 200:
         return "RISK_OFF", 0
 
     score = 0
 
-    # 1. BTC > MA7
-    ma7 = np.mean(closes[max(0, day_idx-6):day_idx+1])
-    if closes[day_idx] > ma7:
+    # 1. BTC > MA20
+    ma20 = np.mean(closes[max(0, day_idx-19):day_idx+1])
+    if closes[day_idx] > ma20:
         score += 1
 
-    # 2. MA7 > MA200
+    # 2. MA20 > MA200
     ma200 = np.mean(closes[max(0, day_idx-199):day_idx+1])
-    if ma7 > ma200:
+    if ma20 > ma200:
         score += 1
 
     # 3. F&G > 25
@@ -342,6 +342,11 @@ def run_backtest(data: Dict, start_capital: float = 1000.0,
     position = None  # {"symbol": "ETH", "amount": 5.2, "entry_idx": 100}
     last_switch_idx = -999
 
+    # Regime cooldown: minimaal 3 dagen in een regime voordat we wisselen
+    REGIME_COOLDOWN_DAYS = 3
+    active_regime = "RISK_OFF"
+    regime_since_idx = 0
+
     # Logging
     log = []
     trades = []
@@ -366,17 +371,28 @@ def run_backtest(data: Dict, start_capital: float = 1000.0,
         # Macro score
         macro = compute_macro_score(fg_value, dxy_bullish)
 
-        # Regime
-        regime, regime_score = compute_regime_on_day(btc_df, day_idx, fg_value, dxy_bullish)
+        # Regime (met cooldown: pas wisselen na 3 dagen stabiel signaal)
+        raw_regime, regime_score = compute_regime_on_day(btc_df, day_idx, fg_value, dxy_bullish)
 
-        if regime != prev_regime and prev_regime is not None:
-            regime_changes.append({
-                "date": str(date.date()),
-                "from": prev_regime,
-                "to": regime,
-                "score": regime_score,
-            })
-        prev_regime = regime
+        if raw_regime != active_regime:
+            days_in_new = day_idx - regime_since_idx
+            if raw_regime != prev_regime:
+                # Nieuw signaal begint nu
+                regime_since_idx = day_idx
+            elif days_in_new >= REGIME_COOLDOWN_DAYS:
+                # Signaal is stabiel genoeg → wissel regime
+                regime_changes.append({
+                    "date": str(date.date()),
+                    "from": active_regime,
+                    "to": raw_regime,
+                    "score": regime_score,
+                })
+                active_regime = raw_regime
+        else:
+            regime_since_idx = day_idx
+
+        prev_regime = raw_regime
+        regime = active_regime
 
         # Score alle coins
         scores = {}
