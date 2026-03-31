@@ -203,7 +203,25 @@ def score_dip(coin: dict, btc_24h: float, btc_7d: float,
         "recovery": round(rec, 3),
         "ath_up": round(ath, 3),
         "dip_score": round(total, 3),
+        "priority": _classify_priority(total, iso, rec, change_24h, change_7d),
     }
+
+
+def _classify_priority(score: float, iso: float, rec: float,
+                       chg_24h: float, chg_7d: float) -> str:
+    """
+    Classificeer dip-kans met prioriteit label.
+
+    🔴 A — Sterke kans: hoge score + diepe isolated dip + herstel zichtbaar
+    🟡 B — Matige kans: redelijke score, nog geen duidelijk herstel
+    ⚪ C — Watchlist: voldoet aan criteria maar nog niet overtuigend
+    """
+    if score >= 0.7 and iso >= 0.4 and rec >= 0.3:
+        return "A"  # Sterke kans
+    elif score >= 0.5 and (iso >= 0.3 or chg_7d <= -20):
+        return "B"  # Matige kans
+    else:
+        return "C"  # Watchlist
 
 
 # ---------------------------------------------------------------------------
@@ -288,10 +306,10 @@ def write_dip_reports(df: pd.DataFrame, reports_dir: Path) -> None:
     lines.append("- Dip is groter dan BTC (geïsoleerd, niet marktbreed)\n")
 
     lines.append("## Top Dip-kansen\n")
-    # Selecteer kolommen voor leesbaarheid
-    display = df[["symbol", "name", "price", "chg_24h_%", "chg_7d_%",
+    lines.append("Prioriteit: A = sterke kans, B = matig, C = watchlist\n")
+    display = df[["priority", "symbol", "name", "price", "chg_24h_%", "chg_7d_%",
                    "ath_dist_%", "dip_score"]].copy()
-    display.columns = ["Symbol", "Naam", "Prijs", "24h%", "7d%", "ATH%", "Dip Score"]
+    display.columns = ["Prio", "Symbol", "Naam", "Prijs", "24h%", "7d%", "ATH%", "Dip Score"]
     lines.append(display.to_markdown(index=False))
 
     lines.append("\n## Score-uitleg")

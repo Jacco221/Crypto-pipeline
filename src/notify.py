@@ -139,18 +139,23 @@ def send_dip_alert(reports_dir: Path, min_score: float = 0.7) -> bool:
     if not alerts:
         return False  # geen alert nodig
 
+    prio_emoji = {"A": "🔴", "B": "🟡", "C": "⚪"}
+
     lines = ""
     for r in alerts[:5]:
         sym = r.get("symbol", "?")
         score = r.get("dip_score", "?")
         chg_24h = r.get("chg_24h_%", "?")
         chg_7d = r.get("chg_7d_%", "?")
-        lines += f"  <b>{sym}</b> — score {score} (24h: {chg_24h}%, 7d: {chg_7d}%)\n"
+        prio = r.get("priority", "C")
+        emoji = prio_emoji.get(prio, "⚪")
+        lines += f"  {emoji} <b>{sym}</b> [{prio}] — score {score} (24h: {chg_24h}%, 7d: {chg_7d}%)\n"
 
     msg = (
         f"🔔 <b>Dip Alert!</b>\n\n"
-        f"{len(alerts)} coin(s) met sterke dip-kans:\n\n"
+        f"{len(alerts)} coin(s) met dip-kans:\n\n"
         f"{lines}\n"
+        f"🔴 A = sterke kans | 🟡 B = matig | ⚪ C = watchlist\n"
         f"Check de details en overweeg instappen als regime het toelaat."
     )
 
