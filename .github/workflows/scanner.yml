@@ -33,7 +33,7 @@ jobs:
 
       - name: Run dip finder
         run: |
-          python3 -m src.dip_finder --limit 150 --top 10 --reports-dir data/reports
+          python3 -m src.dip_finder --limit 300 --top 10 --reports-dir data/reports
 
       - name: Check market regime
         run: |

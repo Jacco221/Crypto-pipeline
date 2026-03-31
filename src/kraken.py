@@ -113,6 +113,34 @@ def get_balance_summary() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Tradeable symbols (cached)
+# ---------------------------------------------------------------------------
+
+_tradeable_cache: Optional[set] = None
+
+
+def get_tradeable_symbols() -> set:
+    """
+    Haal alle coins op die op Kraken verhandelbaar zijn (USD pair).
+    Cached na eerste aanroep.
+    """
+    global _tradeable_cache
+    if _tradeable_cache is not None:
+        return _tradeable_cache
+
+    pairs = _public_request("AssetPairs")
+    symbols = set()
+    for pair_name, info in pairs.items():
+        wsname = info.get("wsname", "")
+        if "/USD" in wsname:
+            base = wsname.split("/")[0].upper()
+            symbols.add(base)
+
+    _tradeable_cache = symbols
+    return symbols
+
+
+# ---------------------------------------------------------------------------
 # Pair lookup
 # ---------------------------------------------------------------------------
 
@@ -188,6 +216,29 @@ def place_market_order(pair: str, side: str, volume: float) -> Dict[str, Any]:
         data["oflags"] = "viqc"  # volume in quote currency
 
     result = _private_request("AddOrder", data)
+    return result
+
+
+def place_stop_loss_order(pair: str, volume: float, stop_price: float) -> Dict[str, Any]:
+    """
+    Plaats een stop-loss order op Kraken (noodrem, -20%).
+    Dit is een conditionele order die automatisch verkoopt als de prijs zakt.
+    """
+    data = {
+        "pair": pair,
+        "type": "sell",
+        "ordertype": "stop-loss",
+        "price": str(stop_price),
+        "volume": str(volume),
+    }
+
+    result = _private_request("AddOrder", data)
+    return result
+
+
+def cancel_all_orders(pair: Optional[str] = None) -> Dict[str, Any]:
+    """Annuleer alle open orders (of voor een specifiek pair)."""
+    result = _private_request("CancelAll")
     return result
 
 

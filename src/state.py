@@ -1,27 +1,27 @@
 # src/state.py
 """
-Positie-state tracker — onthoudt in welke coin je zit.
+Positie-state tracker met Take-Profit / Stop-Loss.
 
 Slaat op in data/state/position.json:
 {
     "symbol": "CHZ",
     "entry_price": 0.085,
-    "entry_time": "2026-03-30T10:00:00",
+    "entry_time": "2026-03-30T10:00:00Z",
     "entry_usd": 350.00,
-    "source": "dip_finder"  // of "pipeline"
+    "peak_price": 0.102,
+    "source": "dip_finder"
 }
 
-Dit voorkomt:
-- Onnodig switchen direct na instap (cooldown)
-- Verlies door heen-en-weer handelen
-- Advies om te kopen wat je al hebt
+Exit-regels:
+- Stop-loss:    -15% vanaf instapprijs (beschermt tegen doorzakken)
+- Take-profit:  trailing stop 12% onder piek, activeert bij >= +20% winst
+- Kraken noodrem: -20% stop-loss order op exchange (vangt nacht-crashes)
 """
 from __future__ import annotations
 
 import json
 import os
-import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -29,11 +29,20 @@ from typing import Optional
 STATE_DIR = Path(os.environ.get("STATE_DIR", "data/state"))
 POSITION_FILE = STATE_DIR / "position.json"
 
-# Cooldown: minimaal X uur na instap voordat we switchen
-DEFAULT_COOLDOWN_HOURS = 48  # 2 dagen
-# Override: alleen switchen als het voordeel >= X% is
+# Cooldown
+DEFAULT_COOLDOWN_HOURS = 48
 OVERRIDE_ADVANTAGE_PCT = 10.0
 
+# Take-Profit / Stop-Loss
+STOP_LOSS_PCT = 0.15         # -15% vanaf entry
+TRAILING_STOP_PCT = 0.12     # -12% vanaf piek
+TRAILING_ACTIVATE_PCT = 0.20  # trailing start pas bij +20% winst
+KRAKEN_HARD_SL_PCT = 0.20    # -20% noodrem op Kraken exchange
+
+
+# ---------------------------------------------------------------------------
+# Positie laden / opslaan
+# ---------------------------------------------------------------------------
 
 def load_position() -> Optional[dict]:
     """Laad huidige positie uit state file."""
@@ -57,6 +66,7 @@ def save_position(symbol: str, entry_price: float, entry_usd: float,
         "entry_price": entry_price,
         "entry_usd": entry_usd,
         "entry_time": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "peak_price": entry_price,  # piek = instapprijs bij start
         "source": source,
     }
     POSITION_FILE.write_text(json.dumps(position, indent=2))
@@ -68,6 +78,123 @@ def clear_position() -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     POSITION_FILE.write_text(json.dumps({"symbol": None}, indent=2))
 
+
+def update_peak_price(current_price: float) -> Optional[float]:
+    """Update de piekprijs als de huidige prijs hoger is. Retourneert nieuwe piek."""
+    pos = load_position()
+    if not pos or not pos.get("symbol"):
+        return None
+
+    peak = pos.get("peak_price") or pos.get("entry_price", 0)
+    if current_price > peak:
+        pos["peak_price"] = current_price
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        POSITION_FILE.write_text(json.dumps(pos, indent=2))
+        return current_price
+    return peak
+
+
+# ---------------------------------------------------------------------------
+# Take-Profit / Stop-Loss checks
+# ---------------------------------------------------------------------------
+
+def check_stop_loss(current_price: float) -> dict:
+    """
+    Check of stop-loss is geraakt (-15% vanaf entry).
+
+    Returns: {"triggered": bool, "reason": str, "loss_pct": float}
+    """
+    pos = load_position()
+    if not pos or not pos.get("entry_price"):
+        return {"triggered": False, "reason": "Geen positie"}
+
+    entry = pos["entry_price"]
+    change_pct = (current_price - entry) / entry
+
+    if change_pct <= -STOP_LOSS_PCT:
+        return {
+            "triggered": True,
+            "reason": (
+                f"Stop-loss geraakt: {pos['symbol']} op "
+                f"${current_price:.4f} ({change_pct*100:+.1f}% "
+                f"vanaf entry ${entry:.4f})"
+            ),
+            "loss_pct": round(change_pct * 100, 1),
+        }
+
+    return {
+        "triggered": False,
+        "reason": f"P&L: {change_pct*100:+.1f}% (SL bij {-STOP_LOSS_PCT*100:.0f}%)",
+        "loss_pct": round(change_pct * 100, 1),
+    }
+
+
+def check_take_profit(current_price: float) -> dict:
+    """
+    Check of take-profit trailing stop is geraakt.
+
+    Logica:
+    1. Update piekprijs
+    2. Als winst >= +20%: activeer trailing stop
+    3. Als prijs daalt 12% onder piek: verkoop
+
+    Returns: {"triggered": bool, "reason": str, "profit_pct": float}
+    """
+    pos = load_position()
+    if not pos or not pos.get("entry_price"):
+        return {"triggered": False, "reason": "Geen positie"}
+
+    entry = pos["entry_price"]
+    peak = update_peak_price(current_price)
+
+    total_change = (current_price - entry) / entry
+    peak_change = (peak - entry) / entry
+    drop_from_peak = (peak - current_price) / peak if peak > 0 else 0
+
+    result = {
+        "profit_pct": round(total_change * 100, 1),
+        "peak_pct": round(peak_change * 100, 1),
+        "drop_from_peak_pct": round(drop_from_peak * 100, 1),
+    }
+
+    # Trailing stop activeert pas bij >= +20% winst (piek)
+    if peak_change >= TRAILING_ACTIVATE_PCT:
+        if drop_from_peak >= TRAILING_STOP_PCT:
+            result["triggered"] = True
+            result["reason"] = (
+                f"Take-profit! {pos['symbol']} piek was +{peak_change*100:.0f}%, "
+                f"nu teruggevallen {drop_from_peak*100:.0f}% onder piek. "
+                f"Winst veiliggesteld op {total_change*100:+.1f}%."
+            )
+        else:
+            result["triggered"] = False
+            result["reason"] = (
+                f"Trailing stop actief: piek +{peak_change*100:.0f}%, "
+                f"nu {drop_from_peak*100:.0f}% onder piek "
+                f"(verkoopt bij {TRAILING_STOP_PCT*100:.0f}% drop)."
+            )
+    else:
+        result["triggered"] = False
+        result["reason"] = (
+            f"P&L: {total_change*100:+.1f}%. "
+            f"Trailing stop activeert bij +{TRAILING_ACTIVATE_PCT*100:.0f}% "
+            f"(nog {(TRAILING_ACTIVATE_PCT - max(0, peak_change))*100:.0f}% te gaan)."
+        )
+
+    return result
+
+
+def get_kraken_sl_price() -> Optional[float]:
+    """Bereken de prijs voor de Kraken noodrem stop-loss order (-20%)."""
+    pos = load_position()
+    if not pos or not pos.get("entry_price"):
+        return None
+    return round(pos["entry_price"] * (1 - KRAKEN_HARD_SL_PCT), 6)
+
+
+# ---------------------------------------------------------------------------
+# Cooldown logica (ongewijzigd)
+# ---------------------------------------------------------------------------
 
 def hours_since_entry() -> Optional[float]:
     """Hoeveel uur geleden ben je ingestapt?"""
@@ -86,25 +213,14 @@ def is_cooldown_active(cooldown_hours: float = DEFAULT_COOLDOWN_HOURS) -> bool:
     """Is de cooldown nog actief (te vroeg om te switchen)?"""
     hours = hours_since_entry()
     if hours is None:
-        return False  # geen positie = geen cooldown
+        return False
     return hours < cooldown_hours
 
 
 def should_switch(current_score: float, target_score: float,
                   cooldown_hours: float = DEFAULT_COOLDOWN_HOURS,
                   override_pct: float = OVERRIDE_ADVANTAGE_PCT) -> dict:
-    """
-    Bepaal of we moeten switchen, rekening houdend met cooldown.
-
-    Returns:
-        {
-            "switch": True/False,
-            "reason": "...",
-            "advantage_pct": 5.2,
-            "cooldown_active": True/False,
-            "hours_in_position": 36.5,
-        }
-    """
+    """Bepaal of we moeten switchen, rekening houdend met cooldown."""
     hours = hours_since_entry()
     pos = load_position()
     advantage = 0.0
@@ -119,18 +235,14 @@ def should_switch(current_score: float, target_score: float,
         "current_symbol": pos.get("symbol") if pos else None,
     }
 
-    # Geen positie → geen cooldown
     if not pos or not pos.get("symbol"):
         result["switch"] = True
         result["reason"] = "Geen huidige positie — vrij om in te stappen."
         return result
 
-    # Cooldown actief?
     if hours is not None and hours < cooldown_hours:
         remaining = cooldown_hours - hours
         result["cooldown_active"] = True
-
-        # Check override
         if advantage >= override_pct:
             result["switch"] = True
             result["reason"] = (
@@ -145,7 +257,6 @@ def should_switch(current_score: float, target_score: float,
             )
         return result
 
-    # Cooldown verlopen — normaal evalueren
     if advantage < 5.0:
         result["switch"] = False
         result["reason"] = (

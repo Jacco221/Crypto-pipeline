@@ -36,7 +36,7 @@ jobs:
 
       - name: Run pipeline (maakt CSV's in data/reports)
         run: |
-          python3 run.py --limit 150 --reports-dir data/reports --fee-bps 52
+          python3 run.py --limit 300 --reports-dir data/reports --fee-bps 52
           echo "---- Listing data/reports ----"
           ls -lah data/reports || true
 

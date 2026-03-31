@@ -238,10 +238,20 @@ def build_scores(limit: int = 150) -> pd.DataFrame:
     # 1. Bulk market data (1 API call)
     print("[Pipeline] Bulk market data ophalen...")
     coins = _fetch_markets_bulk(limit=limit)
-    print(f"[Pipeline] {len(coins)} coins opgehaald")
+    print(f"[Pipeline] {len(coins)} coins opgehaald van CoinGecko")
 
     if not coins:
         raise RuntimeError("Geen coins opgehaald van CoinGecko.")
+
+    # 1b. Filter op Kraken-beschikbaarheid
+    try:
+        from src.kraken import get_tradeable_symbols
+        kraken_symbols = get_tradeable_symbols()
+        before = len(coins)
+        coins = [c for c in coins if (c.get("symbol") or "").upper() in kraken_symbols]
+        print(f"[Pipeline] Kraken filter: {before} → {len(coins)} verhandelbare coins")
+    except Exception as e:
+        print(f"[Pipeline] Kraken filter overgeslagen: {e}")
 
     # 2. BTC price changes (nodig als benchmark voor RS)
     btc_coin = next((c for c in coins if (c.get("symbol") or "").lower() == "btc"), None)

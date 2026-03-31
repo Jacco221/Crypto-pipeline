@@ -24,7 +24,9 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from src.kraken import get_balance, find_usd_pair, plan_switch, execute_switch, get_ticker
 from src.notify import send_message, send_trade_proposal, send_trade_result, check_confirmation
 from src.state import (load_position, save_position, clear_position,
-                       is_cooldown_active, should_switch, hours_since_entry)
+                       is_cooldown_active, should_switch, hours_since_entry,
+                       check_stop_loss, check_take_profit, update_peak_price,
+                       get_kraken_sl_price)
 
 
 # ---------------------------------------------------------------------------
@@ -175,6 +177,42 @@ def determine_action(reports_dir: Path) -> dict:
     result["position_state"] = position
     result["hours_in_position"] = round(hours_in, 1) if hours_in else None
     result["cooldown_active"] = cooldown
+
+    # ===== TP/SL CHECK — HOOGSTE PRIORITEIT (voor regime-check) =====
+    if current and current["est_usd"] > DUST_THRESHOLD_USD and position and position.get("entry_price"):
+        pair = find_usd_pair(current["symbol"])
+        if pair:
+            try:
+                ticker = get_ticker(pair)
+                current_price = ticker.get("last", 0)
+
+                # Update piekprijs
+                update_peak_price(current_price)
+
+                # Stop-loss check (-15%)
+                sl = check_stop_loss(current_price)
+                if sl["triggered"]:
+                    result["action"] = "STOP_LOSS"
+                    result["reason"] = sl["reason"]
+                    result["current_price"] = current_price
+                    return result
+
+                # Take-profit check (trailing stop)
+                tp = check_take_profit(current_price)
+                if tp["triggered"]:
+                    result["action"] = "TAKE_PROFIT"
+                    result["reason"] = tp["reason"]
+                    result["current_price"] = current_price
+                    return result
+
+                # Voeg P&L info toe aan result voor berichten
+                result["pnl_info"] = {
+                    "sl": sl,
+                    "tp": tp,
+                    "current_price": current_price,
+                }
+            except Exception:
+                pass
 
     # ===== RISK_OFF of UNKNOWN → alles naar stablecoin (veiligheid eerst) =====
     if regime in ("RISK_OFF", "UNKNOWN"):
@@ -353,15 +391,64 @@ def run_advisor(reports_dir: Path) -> None:
     regime_emoji = {"RISK_ON": "🟢", "CAUTIOUS": "🟡", "RISK_OFF": "🔴"}.get(regime, "⚪")
     regime_header = f"{regime_emoji} Regime: <b>{regime}</b>"
 
+    # P&L info toevoegen aan HOLD berichten
+    pnl_text = ""
+    pnl = action.get("pnl_info")
+    if pnl:
+        sl_info = pnl["sl"]
+        tp_info = pnl["tp"]
+        pnl_text = f"\n\n💰 P&L: {sl_info['loss_pct']:+.1f}% | {tp_info['reason']}"
+
+    if action["action"] in ("STOP_LOSS", "TAKE_PROFIT"):
+        current = action["current"]
+        pair = find_usd_pair(current["symbol"])
+        if not pair:
+            send_message(f"❌ Geen USD pair voor {current['symbol']}")
+            return
+
+        if action["action"] == "STOP_LOSS":
+            emoji = "🛑"
+            label = "STOP-LOSS"
+        else:
+            emoji = "🎯"
+            label = "TAKE-PROFIT"
+
+        msg = (
+            f"{regime_header}\n\n"
+            f"{emoji} <b>{label}!</b>\n\n"
+            f"{action['reason']}\n\n"
+            f"Verkoop {current['amount']:.4f} <b>{current['symbol']}</b> "
+            f"(~${current['est_usd']:.2f}) naar USD\n"
+            f"Fee: ~${current['est_usd'] * 0.0026:.2f}\n\n"
+            f"Stuur <b>JA</b> om te verkopen of <b>NEE</b> om te houden."
+        )
+        send_message(msg)
+
+        print(f"[Advisor] Wacht op Telegram bevestiging (5 min)...")
+        response = check_confirmation(timeout_seconds=300)
+        if response in ("JA", "YES"):
+            from src.kraken import place_market_order
+            result = place_market_order(pair, "sell", current["amount"])
+            clear_position()
+            send_trade_result({
+                "status": "COMPLETED",
+                "sold": f"{current['amount']:.4f} {current['symbol']} ({label})",
+                "bought": "USD",
+                "sell_txids": result.get("txid", []),
+                "buy_txids": [],
+            })
+        else:
+            send_message("❌ Trade geannuleerd.")
+        return
+
     if action["action"] == "HOLD":
-        # Voeg dip-info toe als die er is (informatief, niet actionable bij RISK_OFF)
         dip_info = ""
         if action.get("dip_reason"):
             dip_info = f"\n\n🔔 {action['dip_reason']}"
             if regime == "RISK_OFF":
                 dip_info += "\n⚠️ Nog niet instappen — wacht op regime-wissel."
 
-        send_message(f"{regime_header}\n\n📊 {action['reason']}{dip_info}")
+        send_message(f"{regime_header}\n\n📊 {action['reason']}{pnl_text}{dip_info}")
         return
 
     if action["action"] == "SELL_TO_STABLE":

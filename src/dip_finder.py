@@ -221,7 +221,17 @@ def find_dips(limit: int = 150, top_n: int = 10) -> pd.DataFrame:
 
     # 1. Bulk data (hergebruikt zelfde call als pipeline)
     coins = _fetch_markets_bulk(limit=limit)
-    print(f"[DipFinder] {len(coins)} coins geladen")
+    print(f"[DipFinder] {len(coins)} coins opgehaald van CoinGecko")
+
+    # 1b. Filter op Kraken-beschikbaarheid
+    try:
+        from src.kraken import get_tradeable_symbols
+        kraken_symbols = get_tradeable_symbols()
+        before = len(coins)
+        coins = [c for c in coins if (c.get("symbol") or "").upper() in kraken_symbols]
+        print(f"[DipFinder] Kraken filter: {before} → {len(coins)} verhandelbare coins")
+    except Exception as e:
+        print(f"[DipFinder] Kraken filter overgeslagen: {e}")
 
     # 2. BTC benchmark
     btc = next((c for c in coins if (c.get("symbol") or "").lower() == "btc"), None)
