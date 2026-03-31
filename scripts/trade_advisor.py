@@ -330,9 +330,20 @@ def run_advisor(reports_dir: Path) -> None:
     print(f"[Advisor] Actie: {action['action']}")
     print(f"[Advisor] Reden: {action['reason']}")
 
+    # Regime emoji voor alle berichten
+    regime = action["regime"]
+    regime_emoji = {"RISK_ON": "🟢", "CAUTIOUS": "🟡", "RISK_OFF": "🔴"}.get(regime, "⚪")
+    regime_header = f"{regime_emoji} Regime: <b>{regime}</b>"
+
     if action["action"] == "HOLD":
-        # Stuur alleen bericht als het regime relevant info bevat
-        send_message(f"📊 {action['reason']}")
+        # Voeg dip-info toe als die er is (informatief, niet actionable bij RISK_OFF)
+        dip_info = ""
+        if action.get("dip_reason"):
+            dip_info = f"\n\n🔔 {action['dip_reason']}"
+            if regime == "RISK_OFF":
+                dip_info += "\n⚠️ Nog niet instappen — wacht op regime-wissel."
+
+        send_message(f"{regime_header}\n\n📊 {action['reason']}{dip_info}")
         return
 
     if action["action"] == "SELL_TO_STABLE":
@@ -344,7 +355,8 @@ def run_advisor(reports_dir: Path) -> None:
             return
 
         msg = (
-            f"🔴 <b>VERKOOP Advies (RISK_OFF)</b>\n\n"
+            f"{regime_header}\n\n"
+            f"🔴 <b>VERKOOP Advies</b>\n\n"
             f"Verkoop {current['amount']:.4f} <b>{current['symbol']}</b> "
             f"(~${current['est_usd']:.2f}) naar USD\n"
             f"Fee: ~${current['est_usd'] * 0.0026:.2f}\n\n"
@@ -379,7 +391,9 @@ def run_advisor(reports_dir: Path) -> None:
                 send_message(f"❌ Trade planning mislukt: {plan['error']}")
                 return
 
-            # Voeg cooldown info toe aan voorstel
+            # Voeg regime + cooldown info toe aan voorstel
+            plan["regime"] = regime
+            plan["regime_header"] = regime_header
             hours = action.get("hours_in_position")
             if hours:
                 cooldown_note = f"\n⏱ In {current['symbol']} sinds {hours:.0f}h geleden"
@@ -411,12 +425,18 @@ def run_advisor(reports_dir: Path) -> None:
             from src.kraken import estimate_trade
             est = estimate_trade(pair, "buy", usd)
 
+            dip_note = ""
+            if action.get("best_dip") and target == action.get("dip_target"):
+                dip_note = "\n📉 Bron: Dip Finder (contraire instap)"
+
             msg = (
-                f"🟢 <b>KOOP Advies ({action['regime']})</b>\n\n"
+                f"{regime_header}\n\n"
+                f"🟢 <b>KOOP Advies</b>\n\n"
                 f"Koop <b>{target}</b> met ${usd:.2f}\n"
                 f"Geschat: ~{est.get('est_coins', '?'):.4f} {target}\n"
                 f"Prijs: ${est.get('price', '?'):.4f}\n"
-                f"Fee: ~${est.get('fee_usd', '?'):.2f}\n\n"
+                f"Fee: ~${est.get('fee_usd', '?'):.2f}"
+                f"{dip_note}\n\n"
                 f"Stuur <b>JA</b> om te kopen of <b>NEE</b> om te wachten."
             )
             send_message(msg)

@@ -197,7 +197,12 @@ def send_trade_proposal(plan: dict) -> bool:
     sell = plan["step1_sell"]
     buy = plan["step2_buy"]
 
+    regime_header = plan.get("regime_header", "")
+    if regime_header:
+        regime_header += "\n\n"
+
     msg = (
+        f"{regime_header}"
         f"💱 <b>Trade Voorstel</b>\n\n"
         f"<b>Stap 1 — Verkoop:</b>\n"
         f"  {sell['volume']:.4f} {plan['current']} → ${sell['net_usd']:.2f}\n"
