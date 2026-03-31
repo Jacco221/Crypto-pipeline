@@ -49,6 +49,10 @@ def _is_dip_candidate(coin: dict, btc_24h: float, btc_7d: float) -> bool:
     change_24h = coin.get("price_change_percentage_24h_in_currency") or 0.0
     change_7d = coin.get("price_change_percentage_7d_in_currency") or 0.0
 
+    # Al hersteld? Dan is het geen dip meer
+    if change_24h > 10.0:
+        return False  # coin is al 10%+ gestegen vandaag = dip voorbij
+
     # Moet significant gedaald zijn
     has_dip = change_24h <= DIP_24H_THRESHOLD or change_7d <= DIP_7D_THRESHOLD
     if not has_dip:

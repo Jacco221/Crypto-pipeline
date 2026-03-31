@@ -100,9 +100,11 @@ def determine_action(reports_dir: Path) -> dict:
         current: huidige positie
         target: doel coin (bij SWITCH/BUY)
     """
-    # 1. Lees regime
-    md_path = reports_dir / "top5_latest.md"
+    # 1. Lees regime — eerst uit rapport, dan uit regime JSON, anders live berekenen
     regime = "UNKNOWN"
+
+    # Poging 1: uit top5 rapport
+    md_path = reports_dir / "top5_latest.md"
     if md_path.exists():
         for line in md_path.read_text().splitlines():
             if "RISK_ON" in line and "Market regime" in line:
@@ -111,6 +113,22 @@ def determine_action(reports_dir: Path) -> dict:
                 regime = "CAUTIOUS"
             elif "RISK_OFF" in line and "Market regime" in line:
                 regime = "RISK_OFF"
+
+    # Poging 2: uit regime JSON (scanner workflow)
+    if regime == "UNKNOWN":
+        regime_path = reports_dir / "regime_latest.json"
+        if regime_path.exists():
+            regime_data = json.loads(regime_path.read_text())
+            regime = regime_data.get("regime", "UNKNOWN")
+
+    # Poging 3: live berekenen als fallback
+    if regime == "UNKNOWN":
+        try:
+            from src.market_regime import determine_market_regime
+            regime_data = determine_market_regime()
+            regime = regime_data.get("regime", "RISK_OFF")
+        except Exception:
+            regime = "RISK_OFF"  # fail-safe: niet handelen
 
     # 2. Lees top coin
     alloc_path = reports_dir / "allocation_latest.json"
@@ -158,8 +176,8 @@ def determine_action(reports_dir: Path) -> dict:
     result["hours_in_position"] = round(hours_in, 1) if hours_in else None
     result["cooldown_active"] = cooldown
 
-    # ===== RISK_OFF → alles naar stablecoin (cooldown negeren, veiligheid eerst) =====
-    if regime == "RISK_OFF":
+    # ===== RISK_OFF of UNKNOWN → alles naar stablecoin (veiligheid eerst) =====
+    if regime in ("RISK_OFF", "UNKNOWN"):
         if current and current["est_usd"] > DUST_THRESHOLD_USD:
             result["action"] = "SELL_TO_STABLE"
             result["reason"] = (
