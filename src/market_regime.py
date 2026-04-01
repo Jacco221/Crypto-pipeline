@@ -171,7 +171,22 @@ def determine_market_regime(
         signals["dxy_score"] = None
         signals["dxy_bullish"] = None
 
-    # 5. MVRV Ratio — on-chain waardebepaling
+    # 5. Funding Rate — leveragestemming in derivatenmarkt
+    try:
+        from src.sentiment import get_funding_rate
+        fr = get_funding_rate()
+        if fr["bonus_point"]:
+            regime_score += 1   # extreem oversold = contrair koopsignaal
+        if fr["penalty_point"]:
+            regime_score -= 1   # extreem overbought = voorzichtigheid
+        signals["funding_rate_pct"] = fr["rate_pct"]
+        signals["funding_signal"] = fr["signal"]
+        signals["funding_interpretation"] = fr["interpretation"]
+    except Exception:
+        signals["funding_rate_pct"] = None
+        signals["funding_signal"] = None
+
+    # 6. MVRV Ratio — on-chain waardebepaling
     mvrv_data = {"mvrv": None, "source": "error", "buy_zone": False,
                  "bubble_zone": False, "bonus_point": 0, "interpretation": "onbekend"}
     try:
@@ -212,8 +227,8 @@ def determine_market_regime(
         "mvrv": mvrv_data.get("mvrv"),
         "mvrv_source": mvrv_data.get("source"),
         "mvrv_interpretation": mvrv_data.get("interpretation"),
-        "rule": "score>=3->RISK_ON, ==2->CAUTIOUS, <=1->RISK_OFF | MVRV<1→+1 bonus | MVRV>3.5→override RISK_OFF",
-        "source": "CoinGecko + alternative.me + Stooq + Glassnode/MA365",
+        "rule": "score>=3->RISK_ON, ==2->CAUTIOUS, <=1->RISK_OFF | funding<-0.05%→+1 | funding>0.10%→-1 | MVRV<1→+1 | MVRV>3.5→override RISK_OFF",
+        "source": "CoinGecko + alternative.me + Stooq + Binance + MA365",
     }
 
 # Kleine CLI om JSON te printen (handig in GH Actions / lokaal)

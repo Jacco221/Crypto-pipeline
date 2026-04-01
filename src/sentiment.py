@@ -99,7 +99,7 @@ def get_mvrv_ratio(btc_prices_series=None) -> Dict[str, Any]:
     # Echte MVRV vereist betaalde API (Glassnode/CoinMetrics).
     # We gebruiken direct de MA-proxy als beste gratis benadering.
 
-    # --- Poging 2: MA365-proxy (geen API key nodig) ---
+    # --- MA365-proxy (geen API key nodig) ---
     if mvrv is None and btc_prices_series is not None:
         try:
             import pandas as pd
@@ -135,3 +135,65 @@ def get_mvrv_ratio(btc_prices_series=None) -> Dict[str, Any]:
             else "neutraal"
         ),
     }
+
+
+# ---------------------------------------------------------------------------
+# Funding Rate  (Binance Futures — gratis, geen key)
+# ---------------------------------------------------------------------------
+
+def get_funding_rate(symbol: str = "BTCUSDT") -> Dict[str, Any]:
+    """
+    Haal de huidige perpetual futures funding rate op via Binance (gratis, geen key).
+
+    Funding rate = vergoeding die longs aan shorts betalen (of andersom) elke 8 uur.
+    Meet hoeveel leverage/sentiment er in de markt zit.
+
+    Drempels:
+        > +0.10% per 8u  = extreem veel longs = overbought → -1 penalty
+        -0.05% tot +0.10% = normaal           = neutraal   → geen aanpassing
+        < -0.05% per 8u  = extreem veel shorts = oversold  → +1 bonus
+
+    Retourneert dict met: rate_pct, signal, bonus_point, penalty_point, interpretation
+    """
+    try:
+        r = requests.get(
+            "https://fapi.binance.com/fapi/v1/premiumIndex",
+            params={"symbol": symbol},
+            timeout=10,
+        )
+        r.raise_for_status()
+        data = r.json()
+        rate = float(data["lastFundingRate"])  # bijv. 0.0001 = 0.01% per 8u
+        rate_pct = rate * 100  # naar percentage
+
+        overheated = rate_pct > 0.10   # extreem veel longs
+        oversold   = rate_pct < -0.05  # extreem veel shorts
+
+        bonus_point   = 1 if oversold   else 0
+        penalty_point = 1 if overheated else 0
+
+        if overheated:
+            interpretation = f"overbought (funding {rate_pct:+.4f}%) → voorzichtig"
+        elif oversold:
+            interpretation = f"oversold (funding {rate_pct:+.4f}%) → contrair koopsignaal"
+        else:
+            interpretation = f"neutraal (funding {rate_pct:+.4f}%)"
+
+        return {
+            "rate_pct": round(rate_pct, 4),
+            "signal": "OVERHEATED" if overheated else "OVERSOLD" if oversold else "NEUTRAL",
+            "bonus_point": bonus_point,
+            "penalty_point": penalty_point,
+            "interpretation": interpretation,
+            "source": "binance_futures",
+        }
+
+    except Exception:
+        return {
+            "rate_pct": 0.0,
+            "signal": "NEUTRAL",
+            "bonus_point": 0,
+            "penalty_point": 0,
+            "interpretation": "neutraal (fallback)",
+            "source": "fallback",
+        }
