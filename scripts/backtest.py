@@ -159,6 +159,62 @@ def fetch_dxy(days: int = 400) -> pd.DataFrame:
     return pd.DataFrame()
 
 
+def fetch_funding_rate_history(days: int = 400) -> pd.DataFrame:
+    """Haal historische BTC funding rates op van Binance Futures (gratis, geen key)."""
+    cache_file = CACHE_DIR / f"funding_rate_{days}d.csv"
+    if cache_file.exists():
+        df = pd.read_csv(cache_file, parse_dates=["date"])
+        if len(df) >= days * 0.7:
+            return df
+
+    import requests
+    from datetime import timezone
+
+    end_ts = int(datetime.now(timezone.utc).timestamp() * 1000)
+    start_ts = end_ts - days * 24 * 3600 * 1000
+
+    rows = []
+    limit = 1000
+    current_start = start_ts
+
+    for _ in range(5):  # max 5 pagina's = 5000 records
+        try:
+            r = requests.get(
+                "https://fapi.binance.com/fapi/v1/fundingRate",
+                params={"symbol": "BTCUSDT", "startTime": current_start,
+                        "endTime": end_ts, "limit": limit},
+                timeout=15,
+            )
+            data = r.json()
+            if not data:
+                break
+            for item in data:
+                ts = int(item["fundingTime"])
+                rate = float(item["fundingRate"]) * 100  # naar %
+                date = pd.to_datetime(ts, unit="ms", utc=True).tz_localize(None).normalize()
+                rows.append({"date": date, "funding_rate_pct": rate})
+            if len(data) < limit:
+                break
+            current_start = int(data[-1]["fundingTime"]) + 1
+            time.sleep(0.5)
+        except Exception as e:
+            print(f"  [WARN] Funding rate fetch fout: {e}")
+            break
+
+    if not rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(rows)
+    # Aggregeer naar daggemiddelde
+    df = df.groupby("date")["funding_rate_pct"].mean().reset_index()
+    df.columns = ["date", "funding_rate_pct"]
+    df = df.sort_values("date").reset_index(drop=True)
+
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    df.to_csv(cache_file, index=False)
+    return df
+
+
 def fetch_all_data(days: int = 365) -> Dict:
     """Haal alle data op voor de backtest."""
     print(f"[Backtest] Data ophalen voor {days} dagen...")
@@ -173,6 +229,11 @@ def fetch_all_data(days: int = 365) -> Dict:
     dxy = fetch_dxy()
     print(f"  → {len(dxy)} dagen")
 
+    # Funding Rate (Binance, gratis)
+    print("  BTC Funding Rate (Binance)...")
+    fr = fetch_funding_rate_history(days + 35)
+    print(f"  → {len(fr)} dagen")
+
     # Coins
     coins = {}
     for i, (coin_id, symbol) in enumerate(TOP_COINS):
@@ -185,7 +246,7 @@ def fetch_all_data(days: int = 365) -> Dict:
             print("SKIP")
         time.sleep(2)  # rate limit
 
-    return {"coins": coins, "fg": fg, "dxy": dxy}
+    return {"coins": coins, "fg": fg, "dxy": dxy, "fr": fr}
 
 
 # ---------------------------------------------------------------------------
@@ -256,8 +317,9 @@ def score_coin_on_day(symbol: str, coin_df: pd.DataFrame, btc_df: pd.DataFrame,
 
 
 def compute_regime_on_day(btc_df: pd.DataFrame, day_idx: int,
-                          fg_value: int, dxy_bullish: bool) -> Tuple[str, int]:
-    """Bereken market regime op een specifieke dag (MA20 voor stabiliteit)."""
+                          fg_value: int, dxy_bullish: bool,
+                          funding_rate_pct: float = 0.0) -> Tuple[str, int]:
+    """Bereken market regime op een specifieke dag (MA20 + funding rate)."""
     closes = btc_df["close"].values
     if day_idx < 200:
         return "RISK_OFF", 0
@@ -281,6 +343,12 @@ def compute_regime_on_day(btc_df: pd.DataFrame, day_idx: int,
     # 4. DXY dalend
     if dxy_bullish:
         score += 1
+
+    # 5. Funding rate (Stap 2)
+    if funding_rate_pct < -0.05:   # extreem short = contrair koopsignaal
+        score += 1
+    elif funding_rate_pct > 0.10:  # extreem long = overbought
+        score -= 1
 
     if score >= 3:
         return "RISK_ON", score
@@ -320,11 +388,13 @@ def compute_macro_score(fg_value: int, dxy_bullish: bool, btc_dom: float = 50.0)
 # ---------------------------------------------------------------------------
 
 def run_backtest(data: Dict, start_capital: float = 1000.0,
-                 fee_pct: float = FEE_PCT) -> Dict:
+                 fee_pct: float = FEE_PCT,
+                 use_funding_rate: bool = True) -> Dict:
     """Draai de backtest simulatie."""
     coins_data = data["coins"]
     fg_df = data["fg"]
     dxy_df = data["dxy"]
+    fr_df = data.get("fr", pd.DataFrame())
 
     btc_df = coins_data.get("BTC")
     if btc_df is None or btc_df.empty:
@@ -368,11 +438,20 @@ def run_backtest(data: Dict, start_capital: float = 1000.0,
         # DXY
         dxy_bullish = compute_dxy_bullish(dxy_df, date)
 
+        # Funding rate voor deze dag
+        funding_rate_pct = 0.0
+        if use_funding_rate and not fr_df.empty:
+            fr_row = fr_df[fr_df["date"] <= date].tail(1)
+            if not fr_row.empty:
+                funding_rate_pct = float(fr_row["funding_rate_pct"].iloc[0])
+
         # Macro score
         macro = compute_macro_score(fg_value, dxy_bullish)
 
         # Regime (met cooldown: pas wisselen na 3 dagen stabiel signaal)
-        raw_regime, regime_score = compute_regime_on_day(btc_df, day_idx, fg_value, dxy_bullish)
+        raw_regime, regime_score = compute_regime_on_day(
+            btc_df, day_idx, fg_value, dxy_bullish, funding_rate_pct
+        )
 
         if raw_regime != active_regime:
             days_in_new = day_idx - regime_since_idx
@@ -579,7 +658,7 @@ def run_backtest(data: Dict, start_capital: float = 1000.0,
 # Fase 4: Rapport genereren
 # ---------------------------------------------------------------------------
 
-def write_results(results: Dict, output_dir: Path) -> None:
+def write_results(results: Dict, output_dir: Path, results_old: Dict = None) -> None:
     """Schrijf backtest resultaten als Markdown rapport."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -594,12 +673,14 @@ def write_results(results: Dict, output_dir: Path) -> None:
     lines.append(f"Startkapitaal: ${results['start_capital']:.0f}\n")
 
     lines.append("\n## Rendement\n")
-    lines.append(f"| Strategie | Rendement | Eindwaarde |")
-    lines.append(f"|---|---|---|")
-    lines.append(f"| **Pipeline systeem** | **{results['strategy_return_pct']:+.1f}%** | **${results['final_value']:.2f}** |")
-    lines.append(f"| BTC buy-and-hold | {results['btc_buyhold_return_pct']:+.1f}% | ${results['start_capital'] * (1 + results['btc_buyhold_return_pct']/100):.2f} |")
+    lines.append(f"| Strategie | Rendement | Eindwaarde | Drawdown | Trades |")
+    lines.append(f"|---|---|---|---|---|")
+    lines.append(f"| **Nieuw systeem (+ funding rate)** | **{results['strategy_return_pct']:+.1f}%** | **${results['final_value']:.2f}** | {results['max_drawdown_pct']:.1f}% | {results['total_trades']} |")
+    if results_old:
+        lines.append(f"| Oud systeem (origineel) | {results_old['strategy_return_pct']:+.1f}% | ${results_old['final_value']:.2f} | {results_old['max_drawdown_pct']:.1f}% | {results_old['total_trades']} |")
+    lines.append(f"| BTC buy-and-hold | {results['btc_buyhold_return_pct']:+.1f}% | ${results['start_capital'] * (1 + results['btc_buyhold_return_pct']/100):.2f} | — | — |")
     if results.get("eth_buyhold_return_pct") is not None:
-        lines.append(f"| ETH buy-and-hold | {results['eth_buyhold_return_pct']:+.1f}% | ${results['start_capital'] * (1 + results['eth_buyhold_return_pct']/100):.2f} |")
+        lines.append(f"| ETH buy-and-hold | {results['eth_buyhold_return_pct']:+.1f}% | ${results['start_capital'] * (1 + results['eth_buyhold_return_pct']/100):.2f} | — | — |")
 
     lines.append(f"\n## Risico\n")
     lines.append(f"- **Max drawdown:** {results['max_drawdown_pct']:.1f}%")
@@ -644,21 +725,30 @@ def main():
     args = ap.parse_args()
 
     data = fetch_all_data(days=args.days)
-    results = run_backtest(data, start_capital=args.start_capital)
-    write_results(results, CACHE_DIR)
+
+    # Draai beide versies voor vergelijking
+    print("\n[Backtest] Versie A: origineel (zonder funding rate)...")
+    results_old = run_backtest(data, start_capital=args.start_capital, use_funding_rate=False)
+
+    print("\n[Backtest] Versie B: nieuw (met funding rate)...")
+    results_new = run_backtest(data, start_capital=args.start_capital, use_funding_rate=True)
+
+    write_results(results_new, CACHE_DIR, results_old=results_old)
 
     # Samenvatting
-    print(f"\n{'='*50}")
-    print(f"BACKTEST RESULTATEN")
-    print(f"{'='*50}")
-    print(f"Pipeline:        {results['strategy_return_pct']:+.1f}%  (${results['final_value']:.2f})")
-    print(f"BTC buy-hold:    {results['btc_buyhold_return_pct']:+.1f}%")
-    if results.get("eth_buyhold_return_pct"):
-        print(f"ETH buy-hold:    {results['eth_buyhold_return_pct']:+.1f}%")
-    print(f"Max drawdown:    {results['max_drawdown_pct']:.1f}%")
-    print(f"Trades:          {results['total_trades']} (fees: ${results['total_fees']:.2f})")
-    print(f"Win rate:        {results['win_rate_pct']:.0f}%")
-    print(f"{'='*50}")
+    print(f"\n{'='*55}")
+    print(f"BACKTEST VERGELIJKING")
+    print(f"{'='*55}")
+    print(f"{'Strategie':<30} {'Rendement':>10} {'Drawdown':>10} {'Trades':>7}")
+    print(f"{'-'*55}")
+    print(f"{'Nieuw (+ funding rate)':<30} {results_new['strategy_return_pct']:>+9.1f}% {results_new['max_drawdown_pct']:>9.1f}% {results_new['total_trades']:>7}")
+    print(f"{'Oud (origineel)':<30} {results_old['strategy_return_pct']:>+9.1f}% {results_old['max_drawdown_pct']:>9.1f}% {results_old['total_trades']:>7}")
+    print(f"{'BTC buy-and-hold':<30} {results_new['btc_buyhold_return_pct']:>+9.1f}%")
+    if results_new.get("eth_buyhold_return_pct"):
+        print(f"{'ETH buy-and-hold':<30} {results_new['eth_buyhold_return_pct']:>+9.1f}%")
+    print(f"{'='*55}")
+    delta = results_new['strategy_return_pct'] - results_old['strategy_return_pct']
+    print(f"Verbetering nieuw vs oud: {delta:+.1f}%")
 
 
 if __name__ == "__main__":
