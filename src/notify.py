@@ -452,13 +452,74 @@ def send_status_report(reports_dir: Path) -> bool:
     return send_message("\n".join(lines))
 
 
+def send_performance_report() -> bool:
+    """
+    Stuur performance rapport op basis van trade log.
+
+    Toont:
+    - Totaal aantal trades + gesloten posities
+    - Win rate
+    - Totale P&L in USD + gemiddeld per trade
+    - Beste en slechtste trade
+    - Stop-losses en take-profits
+    - Laatste 5 trades
+    """
+    try:
+        from src.trade_log import get_performance_summary
+        perf = get_performance_summary()
+    except Exception as e:
+        return send_message(f"❌ Performance data niet beschikbaar: {e}")
+
+    if perf["total_trades"] == 0:
+        return send_message(
+            "📊 <b>Performance Rapport</b>\n\n"
+            "Nog geen trades geregistreerd.\n"
+            "Trades worden automatisch bijgehouden zodra het systeem handelt."
+        )
+
+    # Kleuring op basis van resultaat
+    pnl_total = perf["total_pnl_usd"]
+    pnl_emoji = "📈" if pnl_total >= 0 else "📉"
+    win_emoji = "🟢" if perf["win_rate_pct"] >= 50 else "🔴"
+
+    best = f"+{perf['best_trade_pct']:.1f}%" if perf["best_trade_pct"] is not None else "n.v.t."
+    worst = f"{perf['worst_trade_pct']:.1f}%" if perf["worst_trade_pct"] is not None else "n.v.t."
+    avg = f"{perf['avg_pnl_pct']:+.1f}%" if perf["closed_trades"] > 0 else "n.v.t."
+
+    lines = [
+        f"📊 <b>Performance Rapport</b>\n",
+        f"Trades: {perf['total_trades']} totaal | {perf['closed_trades']} gesloten",
+        f"{win_emoji} Win rate: <b>{perf['win_rate_pct']:.0f}%</b>",
+        f"{pnl_emoji} Totale P&L: <b>${pnl_total:+.2f}</b>",
+        f"Gem. per trade: <b>{avg}</b>",
+        f"Beste: <b>{best}</b> | Slechtste: <b>{worst}</b>",
+        f"Stop-losses: {perf['stop_losses']} | Take-profits: {perf['take_profits']}",
+    ]
+
+    # Laatste 5 trades
+    log = perf.get("log", [])
+    if log:
+        lines.append("\n<b>Laatste trades:</b>")
+        for r in reversed(log[-5:]):
+            action = r.get("action", "?")
+            sym = r.get("symbol", "?")
+            dt = r.get("datetime", "")[:10]
+            pnl = r.get("pnl_pct")
+            pnl_str = f" ({pnl:+.1f}%)" if pnl is not None else ""
+            a_emoji = {"BUY": "🟢", "SELL": "⚪", "STOP_LOSS": "🛑", "TAKE_PROFIT": "🎯"}.get(action, "•")
+            lines.append(f"  {a_emoji} {dt} {action} <b>{sym}</b>{pnl_str}")
+
+    return send_message("\n".join(lines))
+
+
 def handle_telegram_commands(reports_dir: Path) -> int:
     """
     Check voor nieuwe Telegram-commando's en beantwoord ze.
     Verwerkt alle ongelezen berichten van de afgelopen periode.
 
     Ondersteunde commando's:
-        status / /status  → stuur status overzicht
+        status / /status    → stuur status overzicht
+        rapport / /rapport  → stuur performance rapport
 
     Retourneert aantal verwerkte commando's.
     """
@@ -490,6 +551,10 @@ def handle_telegram_commands(reports_dir: Path) -> int:
                 print(f"[Notify] Status-commando ontvangen — rapport sturen...")
                 send_status_report(reports_dir)
                 handled += 1
+            elif text in ("rapport", "/rapport"):
+                print(f"[Notify] Rapport-commando ontvangen — performance sturen...")
+                send_performance_report()
+                handled += 1
 
         # Markeer alle updates als gelezen
         requests.get(
@@ -513,6 +578,7 @@ def main():
     ap.add_argument("--daily", action="store_true", help="Stuur dagelijkse samenvatting")
     ap.add_argument("--dips", action="store_true", help="Stuur dip-alert (indien kansen)")
     ap.add_argument("--status", action="store_true", help="Stuur status overzicht nu")
+    ap.add_argument("--rapport", action="store_true", help="Stuur performance rapport nu")
     ap.add_argument("--commands", action="store_true", help="Verwerk Telegram commando's")
     ap.add_argument("--reports-dir", type=str, default="data/reports")
     ap.add_argument("--min-dip-score", type=float, default=0.7)
@@ -532,6 +598,9 @@ def main():
     if args.status:
         ok = send_status_report(reports)
         print(f"Status: {'OK' if ok else 'FAILED'}")
+    if args.rapport:
+        ok = send_performance_report()
+        print(f"Rapport: {'OK' if ok else 'FAILED'}")
     if args.commands:
         n = handle_telegram_commands(reports)
         print(f"Commands: {n} verwerkt")
