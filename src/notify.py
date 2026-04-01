@@ -352,38 +352,43 @@ def send_status_report(reports_dir: Path) -> bool:
     if signal_lines:
         lines.append(signal_lines)
 
-    # 2. Positie + P&L
+    # 2. Posities + P&L (ondersteunt meerdere coins)
     lines.append("")
     try:
-        from src.state import load_position, hours_since_entry
-        pos = load_position()
-        if pos and pos.get("symbol"):
-            sym = pos["symbol"]
-            entry = pos.get("entry_price", 0)
-            peak = pos.get("peak_price", entry)
-            entry_usd = pos.get("entry_usd", 0)
-            hours = hours_since_entry() or 0
-
-            # Probeer huidige prijs op te halen
-            pnl_text = ""
+        from src.state import load_positions
+        positions = load_positions()
+        if positions:
             try:
                 from src.kraken import find_usd_pair, get_ticker
-                pair = find_usd_pair(sym)
-                if pair:
-                    ticker = get_ticker(pair)
-                    current = ticker.get("last", 0)
-                    if current and entry:
-                        pnl_pct = (current - entry) / entry * 100
-                        pnl_text = f" | P&L: <b>{pnl_pct:+.1f}%</b>"
+                kraken_available = True
             except Exception:
-                pass
+                kraken_available = False
 
-            lines.append(
-                f"💼 <b>Positie: {sym}</b>{pnl_text}\n"
-                f"├ Instap: ${entry:.4f} (${entry_usd:.0f} geïnvesteerd)\n"
-                f"├ Piek: ${peak:.4f}\n"
-                f"└ In positie: {hours:.0f}u geleden"
-            )
+            pos_lines = []
+            for pos in positions:
+                sym = pos["symbol"]
+                entry = pos.get("entry_price", 0)
+                peak = pos.get("peak_price", entry)
+                entry_usd = pos.get("entry_usd", 0)
+                pnl_text = ""
+                if kraken_available and entry:
+                    try:
+                        pair = find_usd_pair(sym)
+                        if pair:
+                            ticker = get_ticker(pair)
+                            current = ticker.get("last", 0)
+                            if current:
+                                pnl_pct = (current - entry) / entry * 100
+                                pnl_text = f" <b>{pnl_pct:+.1f}%</b>"
+                    except Exception:
+                        pass
+                pos_lines.append(
+                    f"  <b>{sym}</b>{pnl_text} | instap ${entry:.4f} "
+                    f"(${entry_usd:.0f}) | piek ${peak:.4f}"
+                )
+
+            label = "Portefeuille" if len(positions) > 1 else "Positie"
+            lines.append(f"💼 <b>{label}:</b>\n" + "\n".join(pos_lines))
         else:
             lines.append("💼 <b>Positie: USD</b> (geen coin)")
     except Exception:

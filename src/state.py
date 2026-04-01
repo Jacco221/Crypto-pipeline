@@ -27,7 +27,8 @@ from typing import Optional
 
 
 STATE_DIR = Path(os.environ.get("STATE_DIR", "data/state"))
-POSITION_FILE = STATE_DIR / "position.json"
+POSITION_FILE  = STATE_DIR / "position.json"
+POSITIONS_FILE = STATE_DIR / "positions.json"  # multi-coin
 
 # Cooldown
 DEFAULT_COOLDOWN_HOURS = 48
@@ -76,6 +77,43 @@ def save_position(symbol: str, entry_price: float, entry_usd: float,
 def clear_position() -> None:
     """Wis positie (na verkoop naar stablecoin)."""
     STATE_DIR.mkdir(parents=True, exist_ok=True)
+    POSITION_FILE.write_text(json.dumps({"symbol": None}, indent=2))
+    POSITIONS_FILE.write_text(json.dumps([]))
+
+
+# ---------------------------------------------------------------------------
+# Multi-positie (diversificatie)
+# ---------------------------------------------------------------------------
+
+def load_positions() -> list:
+    """Laad alle posities. Valt terug op enkele positie voor backwards compat."""
+    if POSITIONS_FILE.exists():
+        try:
+            data = json.loads(POSITIONS_FILE.read_text())
+            if isinstance(data, list):
+                return [p for p in data if p.get("symbol")]
+        except Exception:
+            pass
+    # Fallback: enkele positie
+    pos = load_position()
+    return [pos] if pos else []
+
+
+def save_positions(positions: list) -> None:
+    """Sla meerdere posities op."""
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    POSITIONS_FILE.write_text(json.dumps(positions, indent=2))
+    # Sync: eerste positie ook naar enkelvoudig bestand (backwards compat)
+    if positions:
+        POSITION_FILE.write_text(json.dumps(positions[0], indent=2))
+    else:
+        POSITION_FILE.write_text(json.dumps({"symbol": None}, indent=2))
+
+
+def clear_positions() -> None:
+    """Wis alle posities."""
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    POSITIONS_FILE.write_text(json.dumps([]))
     POSITION_FILE.write_text(json.dumps({"symbol": None}, indent=2))
 
 

@@ -24,6 +24,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from src.kraken import get_balance, find_usd_pair, plan_switch, execute_switch, get_ticker
 from src.notify import send_message, send_trade_proposal, send_trade_result, check_confirmation
 from src.state import (load_position, save_position, clear_position,
+                       load_positions, save_positions, clear_positions,
                        is_cooldown_active, should_switch, hours_since_entry,
                        check_stop_loss, check_take_profit, update_peak_price,
                        get_kraken_sl_price)
@@ -36,6 +37,49 @@ from src.state import (load_position, save_position, clear_position,
 # Assets die we negeren (stablecoins, dust)
 IGNORE_ASSETS = {"ZUSD", "USD", "ZEUR", "EUR", "USDC", "USDG", "USDT"}
 DUST_THRESHOLD_USD = 5.0  # onder $5 = stof
+
+
+def get_all_positions() -> list:
+    """
+    Geeft alle niet-stablecoin posities op Kraken (voor multi-coin portfolio).
+    """
+    balances = get_balance()
+    positions = []
+
+    for asset, amount in balances.items():
+        if asset in IGNORE_ASSETS or amount <= 0:
+            continue
+
+        symbol = asset.replace("X", "").replace("Z", "")
+        if asset == "XXBT":
+            symbol = "BTC"
+        elif asset == "XETH":
+            symbol = "ETH"
+        elif asset == "XXDG":
+            symbol = "DOGE"
+        elif asset == "XXRP":
+            symbol = "XRP"
+
+        pair = find_usd_pair(symbol)
+        if not pair:
+            continue
+
+        try:
+            ticker = get_ticker(pair)
+            est_usd = amount * ticker.get("last", 0)
+        except Exception:
+            est_usd = 0
+
+        if est_usd >= DUST_THRESHOLD_USD:
+            positions.append({
+                "symbol": symbol,
+                "asset_key": asset,
+                "amount": amount,
+                "est_usd": round(est_usd, 2),
+            })
+
+    positions.sort(key=lambda x: x["est_usd"], reverse=True)
+    return positions
 
 
 def get_current_position() -> dict:
@@ -132,12 +176,13 @@ def determine_action(reports_dir: Path) -> dict:
         except Exception:
             regime = "RISK_OFF"  # fail-safe: niet handelen
 
-    # 2. Lees top coin
+    # 2. Lees top coin + allocatie-beslissing
     alloc_path = reports_dir / "allocation_latest.json"
     target_coin = None
+    alloc_decision = {}
     if alloc_path.exists():
-        alloc = json.loads(alloc_path.read_text())
-        allocation = alloc.get("allocation", {})
+        alloc_decision = json.loads(alloc_path.read_text())
+        allocation = alloc_decision.get("allocation", {})
         if allocation:
             target_coin = max(allocation, key=allocation.get)
 
@@ -165,6 +210,7 @@ def determine_action(reports_dir: Path) -> dict:
         "regime": regime,
         "current": current,
         "target_coin": target_coin,
+        "alloc_decision": alloc_decision,
         "best_dip": best_dip,
         "usd_available": round(usd_balance, 2),
     }
@@ -452,35 +498,47 @@ def run_advisor(reports_dir: Path) -> None:
         return
 
     if action["action"] == "SELL_TO_STABLE":
-        current = action["current"]
-        # Plan de verkoop
-        pair = find_usd_pair(current["symbol"])
-        if not pair:
-            send_message(f"❌ Geen USD pair gevonden voor {current['symbol']}")
+        # Verkoop ALLE posities (ook bij diversificatie)
+        all_pos = get_all_positions()
+        if not all_pos:
+            send_message(f"{regime_header}\n\nGeen posities om te verkopen.")
             return
+
+        sell_lines = "\n".join(
+            f"  {p['amount']:.4f} <b>{p['symbol']}</b> (~${p['est_usd']:.2f})"
+            for p in all_pos
+        )
+        total_usd = sum(p["est_usd"] for p in all_pos)
+        total_fee = total_usd * 0.0026 * len(all_pos)
 
         msg = (
             f"{regime_header}\n\n"
             f"🔴 <b>VERKOOP Advies</b>\n\n"
-            f"Verkoop {current['amount']:.4f} <b>{current['symbol']}</b> "
-            f"(~${current['est_usd']:.2f}) naar USD\n"
-            f"Fee: ~${current['est_usd'] * 0.0026:.2f}\n\n"
+            f"Verkoop naar USD:\n{sell_lines}\n\n"
+            f"Totaal: ~${total_usd:.2f} | Fee: ~${total_fee:.2f}\n\n"
             f"Stuur <b>JA</b> om te verkopen of <b>NEE</b> om te houden."
         )
         send_message(msg)
 
-        # Wacht op bevestiging
         print("[Advisor] Wacht op Telegram bevestiging (5 min)...")
         response = check_confirmation(timeout_seconds=300)
         if response in ("JA", "YES"):
             from src.kraken import place_market_order
-            result = place_market_order(pair, "sell", current["amount"])
-            clear_position()  # Positie gewist → in stablecoins
+            all_txids = []
+            sold_parts = []
+            for p in all_pos:
+                pair = find_usd_pair(p["symbol"])
+                if not pair:
+                    continue
+                result_order = place_market_order(pair, "sell", p["amount"])
+                all_txids.extend(result_order.get("txid", []))
+                sold_parts.append(f"{p['amount']:.4f} {p['symbol']}")
+            clear_positions()
             send_trade_result({
                 "status": "COMPLETED",
-                "sold": f"{current['amount']:.4f} {current['symbol']}",
+                "sold": " + ".join(sold_parts),
                 "bought": "USD",
-                "sell_txids": result.get("txid", []),
+                "sell_txids": all_txids,
                 "buy_txids": [],
             })
         else:
@@ -522,48 +580,120 @@ def run_advisor(reports_dir: Path) -> None:
 
         elif action["action"] == "BUY":
             usd = action["usd_available"]
-            pair = find_usd_pair(target)
-            if not pair:
-                send_message(f"❌ Geen USD pair voor {target}")
-                return
-
-            from src.kraken import estimate_trade
-            est = estimate_trade(pair, "buy", usd)
-
-            dip_note = ""
-            if action.get("best_dip") and target == action.get("dip_target"):
-                dip_note = "\n📉 Bron: Dip Finder (contraire instap)"
-
-            msg = (
-                f"{regime_header}\n\n"
-                f"🟢 <b>KOOP Advies</b>\n\n"
-                f"Koop <b>{target}</b> met ${usd:.2f}\n"
-                f"Geschat: ~{est.get('est_coins', '?'):.4f} {target}\n"
-                f"Prijs: ${est.get('price', '?'):.4f}\n"
-                f"Fee: ~${est.get('fee_usd', '?'):.2f}"
-                f"{dip_note}\n\n"
-                f"Stuur <b>JA</b> om te kopen of <b>NEE</b> om te wachten."
+            alloc = action.get("alloc_decision", {})
+            is_diversify = (
+                alloc.get("decision") == "DIVERSIFY"
+                and len(alloc.get("allocation", {})) >= 2
             )
-            send_message(msg)
 
-            print("[Advisor] Wacht op Telegram bevestiging (5 min)...")
-            response = check_confirmation(timeout_seconds=300)
-            if response in ("JA", "YES"):
-                from src.kraken import place_market_order
-                result = place_market_order(pair, "buy", usd)
-                # Update state: we zitten nu in target
-                ticker = get_ticker(pair)
-                save_position(target, ticker.get("last", 0), usd,
-                              source="dip_finder" if action.get("best_dip") else "pipeline")
-                send_trade_result({
-                    "status": "COMPLETED",
-                    "sold": f"${usd:.2f} USD",
-                    "bought": f"{target}",
-                    "sell_txids": [],
-                    "buy_txids": result.get("txid", []),
-                })
+            if is_diversify:
+                # ── Diversificatie: koop 2 coins ──
+                coins = list(alloc["allocation"].items())  # [("CHZ", 0.5), ("ALGO", 0.5)]
+                from src.kraken import estimate_trade
+
+                buy_lines = ""
+                for sym, weight in coins:
+                    usd_part = usd * weight
+                    pair_part = find_usd_pair(sym)
+                    if pair_part:
+                        est = estimate_trade(pair_part, "buy", usd_part)
+                        buy_lines += (
+                            f"  <b>{sym}</b> {weight*100:.0f}% — "
+                            f"${usd_part:.2f} → ~{est.get('est_coins', '?'):.4f} "
+                            f"@ ${est.get('price', '?'):.4f}\n"
+                        )
+
+                msg = (
+                    f"{regime_header}\n\n"
+                    f"🟢 <b>KOOP Advies — Diversificatie</b>\n\n"
+                    f"Totaal beschikbaar: ${usd:.2f}\n\n"
+                    f"{buy_lines}\n"
+                    f"Stuur <b>JA</b> om te kopen of <b>NEE</b> om te wachten."
+                )
+                send_message(msg)
+
+                print("[Advisor] Wacht op Telegram bevestiging (5 min)...")
+                response = check_confirmation(timeout_seconds=300)
+                if response in ("JA", "YES"):
+                    from src.kraken import place_market_order
+                    new_positions = []
+                    all_txids = []
+                    for sym, weight in coins:
+                        usd_part = usd * weight
+                        pair_part = find_usd_pair(sym)
+                        if not pair_part:
+                            continue
+                        result_order = place_market_order(pair_part, "buy", usd_part)
+                        ticker = get_ticker(pair_part)
+                        entry_price = ticker.get("last", 0)
+                        new_positions.append({
+                            "symbol": sym,
+                            "entry_price": entry_price,
+                            "entry_usd": usd_part,
+                            "peak_price": entry_price,
+                            "source": "pipeline_diversify",
+                        })
+                        all_txids.extend(result_order.get("txid", []))
+
+                    save_positions(new_positions)
+                    send_trade_result({
+                        "status": "COMPLETED",
+                        "sold": f"${usd:.2f} USD",
+                        "bought": " + ".join(s for s, _ in coins),
+                        "sell_txids": [],
+                        "buy_txids": all_txids,
+                    })
+                else:
+                    send_message("❌ Trade geannuleerd.")
+
             else:
-                send_message("❌ Trade geannuleerd.")
+                # ── Enkele coin koop (bestaande logica) ──
+                pair = find_usd_pair(target)
+                if not pair:
+                    send_message(f"❌ Geen USD pair voor {target}")
+                    return
+
+                from src.kraken import estimate_trade
+                est = estimate_trade(pair, "buy", usd)
+
+                dip_note = ""
+                if action.get("best_dip") and target == action.get("dip_target"):
+                    dip_note = "\n📉 Bron: Dip Finder (contraire instap)"
+
+                msg = (
+                    f"{regime_header}\n\n"
+                    f"🟢 <b>KOOP Advies</b>\n\n"
+                    f"Koop <b>{target}</b> met ${usd:.2f}\n"
+                    f"Geschat: ~{est.get('est_coins', '?'):.4f} {target}\n"
+                    f"Prijs: ${est.get('price', '?'):.4f}\n"
+                    f"Fee: ~${est.get('fee_usd', '?'):.2f}"
+                    f"{dip_note}\n\n"
+                    f"Stuur <b>JA</b> om te kopen of <b>NEE</b> om te wachten."
+                )
+                send_message(msg)
+
+                print("[Advisor] Wacht op Telegram bevestiging (5 min)...")
+                response = check_confirmation(timeout_seconds=300)
+                if response in ("JA", "YES"):
+                    from src.kraken import place_market_order
+                    result_order = place_market_order(pair, "buy", usd)
+                    ticker = get_ticker(pair)
+                    save_positions([{
+                        "symbol": target,
+                        "entry_price": ticker.get("last", 0),
+                        "entry_usd": usd,
+                        "peak_price": ticker.get("last", 0),
+                        "source": "dip_finder" if action.get("best_dip") else "pipeline",
+                    }])
+                    send_trade_result({
+                        "status": "COMPLETED",
+                        "sold": f"${usd:.2f} USD",
+                        "bought": target,
+                        "sell_txids": [],
+                        "buy_txids": result_order.get("txid", []),
+                    })
+                else:
+                    send_message("❌ Trade geannuleerd.")
 
 
 # ---------------------------------------------------------------------------
