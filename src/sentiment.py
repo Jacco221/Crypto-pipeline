@@ -6,15 +6,12 @@ MVRV: Glassnode gratis API (vereist GLASSNODE_API_KEY env var) met MA365-proxy a
 """
 from __future__ import annotations
 
-import os
 import time
 from typing import Any, Dict, Tuple
 
 import requests
 
 from src.utils import get
-
-GLASSNODE_API_KEY = os.environ.get("GLASSNODE_API_KEY", "")
 
 
 # ---------------------------------------------------------------------------
@@ -99,21 +96,8 @@ def get_mvrv_ratio(btc_prices_series=None) -> Dict[str, Any]:
     mvrv = None
     source = "unknown"
 
-    # --- Poging 1: Glassnode gratis API ---
-    if GLASSNODE_API_KEY:
-        try:
-            r = requests.get(
-                "https://api.glassnode.com/v1/metrics/market/mvrv",
-                params={"a": "BTC", "api_key": GLASSNODE_API_KEY, "i": "24h", "limit": 1},
-                timeout=10,
-            )
-            if r.status_code == 200:
-                data = r.json()
-                if data:
-                    mvrv = float(data[-1]["v"])
-                    source = "glassnode"
-        except Exception:
-            pass
+    # Echte MVRV vereist betaalde API (Glassnode/CoinMetrics).
+    # We gebruiken direct de MA-proxy als beste gratis benadering.
 
     # --- Poging 2: MA365-proxy (geen API key nodig) ---
     if mvrv is None and btc_prices_series is not None:
