@@ -1,13 +1,17 @@
 # src/dip_finder.py
 """
-Dip Finder — detecteert coins met sterke dalingen zonder slecht nieuws.
+Dip Finder — detecteert coins in een 'dip binnen uptrend'.
 
-Contraire instap-strategie: koop de dip als:
+Strategie (verbeterd t.o.v. pure contrarian):
 1. Coin daalt meer dan de markt (isolated dip, niet systemic)
 2. Volume is niet abnormaal hoog (geen paniekverkoop door nieuws)
-3. Sparkline toont eerste tekenen van herstel
-4. Fear & Greed is laag (algemene angst, geen coin-specifiek probleem)
-5. Ver van ATH (meer upside potentie)
+3. Sparkline toont herstel NA het dieptepunt
+4. Relatieve sterkte vs BTC verbetert (rs_recovery) — KEY nieuw signaal
+5. Fear & Greed is laag (algemene angst, geen coin-specifiek probleem)
+
+Het onderscheid met pure contrarian:
+- Pure contrarian: vind coins die hard vielen (58% kans op verder dalen)
+- Dip binnen uptrend: vind coins die vielen EN al herstellen vs BTC (hogere trefkans)
 
 Gebruikt dezelfde bulk-data als pipeline.py — 0 extra API calls.
 Standalone: python3 -m src.dip_finder --limit 150
@@ -152,9 +156,45 @@ def _ath_upside_score(coin: dict) -> float:
     -90% van ATH -> score 0.9
     """
     ath_change = coin.get("ath_change_percentage") or 0.0
-    # ath_change is negatief (bijv. -46% onder ATH)
     distance = abs(ath_change)
     return _clamp01(distance / 100.0)
+
+
+def _rs_recovery_score(coin: dict) -> float:
+    """
+    Verbetert de relatieve sterkte van de coin de laatste 24u?
+
+    Kijk naar de sparkline: is de 2e helft van de laatste 48u beter
+    dan de 1e helft? Dit meet of het momentum omslaat (bodem passé).
+
+    Score 0.0 = prijs versnelt nog naar beneden
+    Score 0.5 = stabiel, geen richting
+    Score 1.0 = duidelijke momentum-omslag naar boven
+
+    Dit is het kern-signaal van 'dip binnen uptrend':
+    de coin herstelt al voordat de brede markt het ziet.
+    """
+    sparkline = coin.get("sparkline_in_7d", {}).get("price", [])
+    if len(sparkline) < 48:
+        return 0.5
+
+    prices = np.array(sparkline[-48:], dtype=float)
+    mid = len(prices) // 2
+
+    first_half  = prices[:mid]
+    second_half = prices[mid:]
+
+    if first_half[0] <= 0 or second_half[0] <= 0:
+        return 0.5
+
+    first_return  = (first_half[-1]  - first_half[0])  / first_half[0]  * 100
+    second_return = (second_half[-1] - second_half[0]) / second_half[0] * 100
+
+    # Verbetering: 2e helft beter dan 1e helft
+    improvement = second_return - first_return
+
+    # Map: -10pp → 0.1 (versneld dalen), 0 → 0.5, +10pp → 0.9 (duidelijk omslag)
+    return _clamp01((improvement + 10.0) / 20.0)
 
 
 # ---------------------------------------------------------------------------
@@ -167,21 +207,24 @@ def score_dip(coin: dict, btc_24h: float, btc_7d: float,
     iso = _isolated_dip_score(coin, btc_24h, btc_7d)
     vol = _volume_normality_score(coin)
     rec = _recovery_score(coin)
+    rsr = _rs_recovery_score(coin)
     ath = _ath_upside_score(coin)
 
     scores = {
-        "isolated_dip": iso,
+        "isolated_dip":  iso,
         "volume_normal": vol,
-        "recovery": rec,
-        "ath_upside": ath,
-        "fear_greed": fg_score,
+        "recovery":      rec,
+        "rs_recovery":   rsr,   # NIEUW: momentum-omslag signaal
+        "ath_upside":    ath,
+        "fear_greed":    fg_score,
     }
     weights = {
-        "isolated_dip": 0.35,
-        "volume_normal": 0.20,
-        "recovery": 0.25,
-        "ath_upside": 0.10,
-        "fear_greed": 0.10,
+        "isolated_dip":  0.25,  # was 0.35 — diepte dip minder bepalend
+        "volume_normal": 0.15,  # was 0.20
+        "recovery":      0.25,  # ongewijzigd
+        "rs_recovery":   0.25,  # NIEUW: momentum-omslag krijgt veel gewicht
+        "ath_upside":    0.05,  # was 0.10
+        "fear_greed":    0.05,  # was 0.10
     }
 
     total = weighted_group_score(scores, weights)
@@ -201,28 +244,30 @@ def score_dip(coin: dict, btc_24h: float, btc_7d: float,
         "iso_dip": round(iso, 3),
         "vol_norm": round(vol, 3),
         "recovery": round(rec, 3),
+        "rs_recovery": round(rsr, 3),
         "ath_up": round(ath, 3),
         "dip_score": round(total, 3),
-        "priority": _classify_priority(total, iso, rec, change_24h, change_7d),
+        "priority": _classify_priority(total, iso, rec, rsr, change_24h, change_7d),
     }
 
 
-def _classify_priority(score: float, iso: float, rec: float,
+def _classify_priority(score: float, iso: float, rec: float, rsr: float,
                        chg_24h: float, chg_7d: float) -> str:
     """
     Classificeer dip-kans met prioriteit label.
 
-    🔴 A — Sterke kans: hoge score + diepe isolated dip + herstel zichtbaar
-    🟡 B — Matige kans: redelijke score, nog geen duidelijk herstel
-    ⚪ C — Watchlist: voldoet aan criteria maar nog niet overtuigend
+    A — Sterke kans: dip + herstel + momentum omslag (dip binnen uptrend)
+    B — Matige kans: dip + herstel maar nog geen momentum-omslag
+    C — Watchlist: dip aanwezig maar (nog) geen herstel-signalen
     """
-    if score >= 0.7 and iso >= 0.4 and rec >= 0.3:
-        return "A"  # Sterke kans
-
+    # A: hoge score + geïsoleerde dip + sparkline herstel + momentum omslaat
+    if score >= 0.7 and iso >= 0.4 and rec >= 0.3 and rsr >= 0.55:
+        return "A"
+    # B: redelijke dip maar momentum-omslag nog niet overtuigend
     elif score >= 0.5 and (iso >= 0.3 or chg_7d <= -20):
-        return "B"  # Matige kans
+        return "B"
     else:
-        return "C"  # Watchlist
+        return "C"
 
 
 # ---------------------------------------------------------------------------
@@ -316,11 +361,12 @@ def write_dip_reports(df: pd.DataFrame, reports_dir: Path) -> None:
     lines.append("\n## Score-uitleg")
     lines.append("| Component | Gewicht | Betekenis |")
     lines.append("|-----------|---------|-----------|")
-    lines.append("| Isolated dip | 35% | Hoeveel slechter dan BTC (groter = sterker signaal) |")
-    lines.append("| Volume normaal | 20% | Laag volume = geen nieuws-paniek |")
+    lines.append("| Isolated dip | 25% | Hoeveel slechter dan BTC (groter = sterker signaal) |")
+    lines.append("| Volume normaal | 15% | Laag volume = geen nieuws-paniek |")
     lines.append("| Herstel | 25% | Stijgt de prijs al vanaf het dieptepunt? |")
-    lines.append("| ATH afstand | 10% | Ver van ATH = meer upside potentie |")
-    lines.append("| Fear & Greed | 10% | Lage F&G = marktbrede angst (contrair positief) |")
+    lines.append("| **RS Recovery** | **25%** | **Momentum-omslag: verbetert relatieve sterkte vs BTC?** |")
+    lines.append("| ATH afstand | 5% | Ver van ATH = meer upside potentie |")
+    lines.append("| Fear & Greed | 5% | Lage F&G = marktbrede angst (contrair positief) |")
 
     lines.append("\n> **Let op:** Dit is geen koopadvies. Controleer altijd het nieuws en fundamentals.")
 
