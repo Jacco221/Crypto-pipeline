@@ -138,6 +138,71 @@ def get_mvrv_ratio(btc_prices_series=None) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# BTC Dominance Rotatie  (berekend uit bulk coin data — 0 extra API calls)
+# ---------------------------------------------------------------------------
+
+def get_btc_rotation(coins: list) -> dict:
+    """
+    Bepaal of BTC of altcoins in de lead zijn op basis van 7-daags rendement.
+
+    Logica:
+        BTC_7d vs mediaan van top altcoins 7d (min $100M mcap, excl. stables)
+        diff > +3pp  → BTC_SEASON  : BTC wint terrein, kies enkel sterke outperformers
+        diff < -3pp  → ALT_SEASON  : alts winnen, meer altcoin kansen
+        -3 tot +3pp  → NEUTRAL     : geen duidelijke rotatie
+
+    Impact op scoring:
+        ALT_SEASON  : RS_7d krijgt meer gewicht (snelle momentum telt)
+        BTC_SEASON  : RS_30d krijgt meer gewicht (alleen bewezen outperformers)
+        NEUTRAL     : standaard gewichten
+
+    Retourneert dict met: rotation, btc_7d, alt_median_7d, diff_pp, rs_7d_weight, rs_30d_weight
+    """
+    import numpy as np
+
+    btc = next((c for c in coins if (c.get("symbol") or "").lower() == "btc"), None)
+    btc_7d = btc.get("price_change_percentage_7d_in_currency", 0.0) if btc else 0.0
+
+    stables = {"usdt", "usdc", "busd", "dai", "tusd", "usde", "usdp", "fdusd",
+               "pyusd", "btc", "eth"}
+    alt_7ds = [
+        c.get("price_change_percentage_7d_in_currency", 0.0)
+        for c in coins
+        if (c.get("symbol") or "").lower() not in stables
+        and (c.get("market_cap") or 0) > 100_000_000
+    ]
+
+    if not alt_7ds:
+        return {
+            "rotation": "NEUTRAL", "btc_7d": btc_7d,
+            "alt_median_7d": 0.0, "diff_pp": 0.0,
+            "rs_7d_weight": 0.4, "rs_30d_weight": 0.6,
+        }
+
+    alt_median = float(np.median(alt_7ds))
+    diff = btc_7d - alt_median
+
+    if diff > 3.0:
+        rotation = "BTC_SEASON"
+        rs_7d_w, rs_30d_w = 0.2, 0.8   # bewezen lange-termijn outperformers
+    elif diff < -3.0:
+        rotation = "ALT_SEASON"
+        rs_7d_w, rs_30d_w = 0.6, 0.4   # korte-termijn momentum telt
+    else:
+        rotation = "NEUTRAL"
+        rs_7d_w, rs_30d_w = 0.4, 0.6   # standaard
+
+    return {
+        "rotation": rotation,
+        "btc_7d": round(btc_7d, 2),
+        "alt_median_7d": round(alt_median, 2),
+        "diff_pp": round(diff, 2),
+        "rs_7d_weight": rs_7d_w,
+        "rs_30d_weight": rs_30d_w,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Funding Rate  (Binance Futures — gratis, geen key)
 # ---------------------------------------------------------------------------
 

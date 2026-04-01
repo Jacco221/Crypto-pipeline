@@ -142,23 +142,27 @@ def _sigmoid(diff: float, sensitivity: float = 10.0) -> float:
     return 1.0 / (1.0 + math.exp(-sensitivity * diff))
 
 
-def _rs_from_bulk(coin: dict, btc_7d: float, btc_30d: float) -> Dict[str, float]:
+def _rs_from_bulk(coin: dict, btc_7d: float, btc_30d: float,
+                  rs_7d_weight: float = 0.4, rs_30d_weight: float = 0.6) -> Dict[str, float]:
     """
     RS vs BTC uit de price_change_percentage velden.
     Continue sigmoid mapping.
+
+    Gewichten worden aangepast op basis van BTC rotatie-signaal:
+        ALT_SEASON  → rs_7d_weight=0.6 (momentum telt meer)
+        BTC_SEASON  → rs_7d_weight=0.2 (alleen bewezen outperformers)
+        NEUTRAL     → rs_7d_weight=0.4 (standaard)
     """
     coin_7d = coin.get("price_change_percentage_7d_in_currency") or 0.0
     coin_30d = coin.get("price_change_percentage_30d_in_currency") or 0.0
 
-    # Verschil in procentpunten, gedeeld door 100 voor fractie
     diff_7d = (coin_7d - btc_7d) / 100.0
     diff_30d = (coin_30d - btc_30d) / 100.0
 
     rs_7d = _sigmoid(diff_7d)
     rs_30d = _sigmoid(diff_30d)
 
-    # Gewogen: 30d zwaarder (stabielere trend)
-    rs_score = 0.4 * rs_7d + 0.6 * rs_30d
+    rs_score = rs_7d_weight * rs_7d + rs_30d_weight * rs_30d
 
     return {
         "rs_7d": round(rs_7d, 4),
@@ -174,7 +178,7 @@ def _rs_from_bulk(coin: dict, btc_7d: float, btc_30d: float) -> Dict[str, float]
 # ---------------------------------------------------------------------------
 
 def _score_coin_bulk(coin: dict, btc_7d: float, btc_30d: float,
-                     macro_data: dict) -> dict:
+                     macro_data: dict, rotation: dict = None) -> dict:
     """Score een coin volledig uit bulk-data, zonder extra API calls."""
     symbol = (coin.get("symbol") or "").upper()
     name = coin.get("name", symbol)
@@ -182,8 +186,10 @@ def _score_coin_bulk(coin: dict, btc_7d: float, btc_30d: float,
     # 1. TA
     ta = _ta_from_sparkline(coin)
 
-    # 2. Momentum (RS vs BTC)
-    rs = _rs_from_bulk(coin, btc_7d, btc_30d)
+    # 2. Momentum (RS vs BTC) — gewichten afhankelijk van rotatie
+    rs_7d_w  = rotation["rs_7d_weight"]  if rotation else 0.4
+    rs_30d_w = rotation["rs_30d_weight"] if rotation else 0.6
+    rs = _rs_from_bulk(coin, btc_7d, btc_30d, rs_7d_w, rs_30d_w)
 
     # 3. Macro (gedeeld)
     macro_score = macro_data["macro_score"]
@@ -267,11 +273,18 @@ def build_scores(limit: int = 150) -> pd.DataFrame:
           f"BTC Dom: {macro_data['btc_dom_pct']:.1f}% (score: {macro_data['btc_dom_score']:.2f})  |  "
           f"Macro totaal: {macro_data['macro_score']:.2f}")
 
-    # 4. Score alle coins (geen extra API calls)
+    # 4. BTC Dominance Rotatie (uit bulk data — 0 extra API calls)
+    from src.sentiment import get_btc_rotation
+    rotation = get_btc_rotation(coins)
+    print(f"[Pipeline] Rotatie: {rotation['rotation']} "
+          f"(BTC 7d: {rotation['btc_7d']:+.1f}% vs alts mediaan: {rotation['alt_median_7d']:+.1f}%, "
+          f"diff: {rotation['diff_pp']:+.1f}pp)")
+
+    # 5. Score alle coins (geen extra API calls)
     print("[Pipeline] Scoring...")
     results: List[dict] = []
     for coin in coins:
-        row = _score_coin_bulk(coin, btc_7d, btc_30d, macro_data)
+        row = _score_coin_bulk(coin, btc_7d, btc_30d, macro_data, rotation)
         results.append(row)
 
     df = pd.DataFrame(results)
@@ -279,5 +292,8 @@ def build_scores(limit: int = 150) -> pd.DataFrame:
 
     elapsed = time.time() - start
     print(f"[Pipeline] Klaar in {elapsed:.1f}s — {len(df)} coins gescoord")
+
+    # Sla rotatie op voor andere modules (notify, trade_advisor)
+    df.attrs["rotation"] = rotation
 
     return df

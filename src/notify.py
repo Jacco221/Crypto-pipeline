@@ -106,13 +106,29 @@ def send_daily_summary(reports_dir: Path) -> bool:
         parts = [f"{k} {v*100:.0f}%" for k, v in coins.items()]
         alloc_text = f"Allocatie: {decision} ({', '.join(parts)})"
 
+    # Rotatie
+    rotation_text = ""
+    rotation_path = reports_dir / "rotation_latest.json"
+    if rotation_path.exists():
+        try:
+            rot = json.loads(rotation_path.read_text())
+            rot_label = rot.get("rotation", "NEUTRAL")
+            rot_emoji = {"ALT_SEASON": "🌀", "BTC_SEASON": "₿", "NEUTRAL": "⚖️"}.get(rot_label, "⚖️")
+            rotation_text = (
+                f"\n{rot_emoji} <b>Rotatie:</b> {rot_label} "
+                f"(BTC {rot.get('btc_7d', 0):+.1f}% vs alts {rot.get('alt_median_7d', 0):+.1f}%)"
+            )
+        except Exception:
+            pass
+
     # Emoji per regime
     emoji = {"RISK_ON": "🟢", "CAUTIOUS": "🟡", "RISK_OFF": "🔴"}.get(regime, "⚪")
 
     msg = (
         f"{emoji} <b>Dagelijkse Crypto Update</b>\n\n"
         f"<b>Regime:</b> {regime_line}\n"
-        f"<b>Advies:</b> {advice_line}\n\n"
+        f"<b>Advies:</b> {advice_line}"
+        f"{rotation_text}\n\n"
         f"<b>Top 3:</b>\n{top_lines}\n"
         f"{alloc_text}"
     )

@@ -333,6 +333,12 @@ def main():
     # 3) Bewaar volledige scores
     write_csv_json(df_ranked, reports_dir / "scores_latest.csv", reports_dir / "scores_latest.json")
 
+    # Bewaar rotatie (uit df.attrs als build_scores het heeft berekend)
+    rotation = getattr(df, "attrs", {}).get("rotation") or getattr(df_ranked, "attrs", {}).get("rotation")
+    if rotation:
+        with open(reports_dir / "rotation_latest.json", "w", encoding="utf-8") as f:
+            json.dump(rotation, f, ensure_ascii=False, indent=2)
+
     # 4) Beslissing o.b.v. threshold + fees (marktfilter blijft in workflow)
     advice = compute_decision(
         df_scores=df_ranked,
