@@ -1,14 +1,20 @@
 # src/sentiment.py
 """
-Sentiment-indicatoren: Fear & Greed Index en BTC Dominance.
-Beide gratis en zonder API-key.
+Sentiment-indicatoren: Fear & Greed Index, BTC Dominance en MVRV Ratio.
+Fear & Greed + BTC Dominance: gratis en zonder API-key.
+MVRV: Glassnode gratis API (vereist GLASSNODE_API_KEY env var) met MA365-proxy als fallback.
 """
 from __future__ import annotations
 
+import os
 import time
 from typing import Any, Dict, Tuple
 
+import requests
+
 from src.utils import get
+
+GLASSNODE_API_KEY = os.environ.get("GLASSNODE_API_KEY", "")
 
 
 # ---------------------------------------------------------------------------
@@ -68,3 +74,80 @@ def btc_dominance_indicator() -> Tuple[float, float, float]:
         return (score, btc_dom, 0.0)
     except Exception:
         return (0.5, 50.0, 0.0)  # neutraal bij fout
+
+
+# ---------------------------------------------------------------------------
+# MVRV Ratio  (Glassnode gratis tier — vereist API key)
+# ---------------------------------------------------------------------------
+
+def get_mvrv_ratio(btc_prices_series=None) -> Dict[str, Any]:
+    """
+    Haal MVRV ratio op voor BTC.
+
+    MVRV = Market Value / Realized Value
+        < 1.0  = markt onder reële waarde = historische koopzone   (bonus +1 punt)
+        1.0–3.5 = neutraal                                          (geen aanpassing)
+        > 3.5  = significant overgewaardeerd = bubble-zone          (hard RISK_OFF)
+
+    Bronvolgorde:
+        1. Glassnode gratis API (nauwkeurig, vereist GLASSNODE_API_KEY env var)
+        2. MA365-proxy (prijs / 365-dag gemiddelde als benadering van realized price)
+        3. Neutraal fallback (1.5) bij volledige fout
+
+    Retourneert dict met: mvrv, source, buy_zone, bubble_zone, bonus_point
+    """
+    mvrv = None
+    source = "unknown"
+
+    # --- Poging 1: Glassnode gratis API ---
+    if GLASSNODE_API_KEY:
+        try:
+            r = requests.get(
+                "https://api.glassnode.com/v1/metrics/market/mvrv",
+                params={"a": "BTC", "api_key": GLASSNODE_API_KEY, "i": "24h", "limit": 1},
+                timeout=10,
+            )
+            if r.status_code == 200:
+                data = r.json()
+                if data:
+                    mvrv = float(data[-1]["v"])
+                    source = "glassnode"
+        except Exception:
+            pass
+
+    # --- Poging 2: MA365-proxy (geen API key nodig) ---
+    if mvrv is None and btc_prices_series is not None:
+        try:
+            import pandas as pd
+            s = btc_prices_series
+            if len(s) >= 200:
+                window = min(365, len(s))
+                realized_proxy = float(s.rolling(window, min_periods=100).mean().iloc[-1])
+                current_price = float(s.iloc[-1])
+                if realized_proxy > 0:
+                    mvrv = current_price / realized_proxy
+                    source = f"ma{window}_proxy"
+        except Exception:
+            pass
+
+    # --- Fallback: neutraal ---
+    if mvrv is None:
+        mvrv = 1.5
+        source = "fallback_neutral"
+
+    buy_zone = mvrv < 1.0
+    bubble_zone = mvrv > 3.5
+    bonus_point = 1 if buy_zone else 0
+
+    return {
+        "mvrv": round(mvrv, 3),
+        "source": source,
+        "buy_zone": buy_zone,       # MVRV < 1.0 → +1 regime punt
+        "bubble_zone": bubble_zone, # MVRV > 3.5 → override naar RISK_OFF
+        "bonus_point": bonus_point,
+        "interpretation": (
+            "koopzone (MVRV<1.0)" if buy_zone
+            else "bubble-waarschuwing (MVRV>3.5)" if bubble_zone
+            else "neutraal"
+        ),
+    }

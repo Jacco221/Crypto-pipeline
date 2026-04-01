@@ -14,6 +14,7 @@ env:
   BIG_ADV_PCT:   "5.0"      # voordeel (%) om koeltijd te mogen overriden
   TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
   TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+  GLASSNODE_API_KEY: ${{ secrets.GLASSNODE_API_KEY }}
 
 jobs:
   run:

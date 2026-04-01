@@ -171,8 +171,30 @@ def determine_market_regime(
         signals["dxy_score"] = None
         signals["dxy_bullish"] = None
 
+    # 5. MVRV Ratio — on-chain waardebepaling
+    mvrv_data = {"mvrv": None, "source": "error", "buy_zone": False,
+                 "bubble_zone": False, "bonus_point": 0, "interpretation": "onbekend"}
+    try:
+        from src.sentiment import get_mvrv_ratio
+        mvrv_data = get_mvrv_ratio(btc_prices_series=s)
+        if mvrv_data["bonus_point"]:
+            regime_score += 1  # MVRV < 1.0 = bonus punt
+        signals["mvrv"] = mvrv_data["mvrv"]
+        signals["mvrv_source"] = mvrv_data["source"]
+        signals["mvrv_buy_zone"] = mvrv_data["buy_zone"]
+        signals["mvrv_bubble_zone"] = mvrv_data["bubble_zone"]
+    except Exception:
+        signals["mvrv"] = None
+        signals["mvrv_source"] = "error"
+        signals["mvrv_buy_zone"] = False
+        signals["mvrv_bubble_zone"] = False
+
     # Regime bepalen
-    if regime_score >= 3:
+    # Bubble override: MVRV > 3.5 forceert RISK_OFF ongeacht score
+    if mvrv_data.get("bubble_zone"):
+        regime = "RISK_OFF"
+        signals["mvrv_override"] = "bubble: RISK_OFF geforceerd"
+    elif regime_score >= 3:
         regime = "RISK_ON"
     elif regime_score == 2:
         regime = "CAUTIOUS"
@@ -187,8 +209,11 @@ def determine_market_regime(
         "last_close": round(last_close, 2),
         "ma20": round(last_ma_short, 2),
         "ma200": round(last_ma200, 2),
-        "rule": "score>=3->RISK_ON, ==2->CAUTIOUS, <=1->RISK_OFF",
-        "source": "CoinGecko + alternative.me + Stooq",
+        "mvrv": mvrv_data.get("mvrv"),
+        "mvrv_source": mvrv_data.get("source"),
+        "mvrv_interpretation": mvrv_data.get("interpretation"),
+        "rule": "score>=3->RISK_ON, ==2->CAUTIOUS, <=1->RISK_OFF | MVRV<1→+1 bonus | MVRV>3.5→override RISK_OFF",
+        "source": "CoinGecko + alternative.me + Stooq + Glassnode/MA365",
     }
 
 # Kleine CLI om JSON te printen (handig in GH Actions / lokaal)
