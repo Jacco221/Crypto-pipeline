@@ -292,6 +292,197 @@ def check_confirmation(timeout_seconds: int = 300) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
+# Status rapport
+# ---------------------------------------------------------------------------
+
+def send_status_report(reports_dir: Path) -> bool:
+    """
+    Stuur volledig status-overzicht op aanvraag.
+
+    Bevat:
+    - Huidig regime + signalen breakdown
+    - Huidige positie + P&L (indien beschikbaar)
+    - Top 3 coins
+    - Actieve dip-kansen
+    """
+    lines = []
+
+    # 1. Regime
+    regime = "ONBEKEND"
+    regime_score = "?"
+    signal_lines = ""
+
+    regime_path = reports_dir / "regime_latest.json"
+    md_path = reports_dir / "top5_latest.md"
+
+    if regime_path.exists():
+        try:
+            rd = json.loads(regime_path.read_text())
+            regime = rd.get("regime", "ONBEKEND")
+            regime_score = rd.get("regime_score", "?")
+            s = rd.get("signals", {})
+
+            def tick(v): return "✅" if v else "❌"
+
+            signal_lines = (
+                f"├ BTC vs MA20: {tick(s.get('btc_above_ma20'))} "
+                f"({rd.get('last_close', '?')} / {rd.get('ma20', '?')})\n"
+                f"├ MA20 vs MA200: {tick(s.get('ma20_above_ma200'))}\n"
+                f"├ Fear &amp; Greed: {s.get('fear_greed_value', '?')} {tick(s.get('fg_not_extreme_fear'))}\n"
+                f"├ DXY dalend: {tick(s.get('dxy_bullish'))}\n"
+                f"├ Funding rate: {s.get('funding_rate_pct', '?')}% "
+                f"{tick(s.get('funding_signal') == 'OVERSOLD')}\n"
+                f"└ MVRV: {s.get('mvrv', '?')} "
+                f"{tick(s.get('mvrv_buy_zone'))}"
+            )
+        except Exception:
+            pass
+    elif md_path.exists():
+        for line in md_path.read_text().splitlines():
+            if "RISK_ON" in line:
+                regime = "RISK_ON"
+            elif "CAUTIOUS" in line:
+                regime = "CAUTIOUS"
+            elif "RISK_OFF" in line:
+                regime = "RISK_OFF"
+
+    regime_emoji = {"RISK_ON": "🟢", "CAUTIOUS": "🟡", "RISK_OFF": "🔴"}.get(regime, "⚪")
+    lines.append(f"📊 <b>Status Overzicht</b>\n")
+    lines.append(f"{regime_emoji} <b>Regime: {regime}</b> (score {regime_score})")
+    if signal_lines:
+        lines.append(signal_lines)
+
+    # 2. Positie + P&L
+    lines.append("")
+    try:
+        from src.state import load_position, hours_since_entry
+        pos = load_position()
+        if pos and pos.get("symbol"):
+            sym = pos["symbol"]
+            entry = pos.get("entry_price", 0)
+            peak = pos.get("peak_price", entry)
+            entry_usd = pos.get("entry_usd", 0)
+            hours = hours_since_entry() or 0
+
+            # Probeer huidige prijs op te halen
+            pnl_text = ""
+            try:
+                from src.kraken import find_usd_pair, get_ticker
+                pair = find_usd_pair(sym)
+                if pair:
+                    ticker = get_ticker(pair)
+                    current = ticker.get("last", 0)
+                    if current and entry:
+                        pnl_pct = (current - entry) / entry * 100
+                        pnl_text = f" | P&L: <b>{pnl_pct:+.1f}%</b>"
+            except Exception:
+                pass
+
+            lines.append(
+                f"💼 <b>Positie: {sym}</b>{pnl_text}\n"
+                f"├ Instap: ${entry:.4f} (${entry_usd:.0f} geïnvesteerd)\n"
+                f"├ Piek: ${peak:.4f}\n"
+                f"└ In positie: {hours:.0f}u geleden"
+            )
+        else:
+            lines.append("💼 <b>Positie: USD</b> (geen coin)")
+    except Exception:
+        lines.append("💼 Positie: onbekend")
+
+    # 3. Top 3 coins
+    lines.append("")
+    scores_path = reports_dir / "scores_latest.csv"
+    if scores_path.exists():
+        try:
+            import csv
+            with open(scores_path) as f:
+                rows = list(csv.DictReader(f))[:3]
+            top_text = "\n".join(
+                f"  {i+1}. <b>{r['symbol']}</b> — {r.get('Total_%', '?')}%"
+                for i, r in enumerate(rows)
+            )
+            lines.append(f"📈 <b>Top 3 coins:</b>\n{top_text}")
+        except Exception:
+            pass
+
+    # 4. Dip-kansen
+    dips_path = reports_dir / "dips_latest.csv"
+    if dips_path.exists():
+        try:
+            import csv
+            with open(dips_path) as f:
+                dips = [r for r in csv.DictReader(f)
+                        if float(r.get("dip_score", 0)) >= 0.6][:3]
+            if dips:
+                prio_emoji = {"A": "🟢", "B": "🟡", "C": "⚪"}
+                dip_text = "\n".join(
+                    f"  {prio_emoji.get(r.get('priority','C'), '⚪')} "
+                    f"<b>{r['symbol']}</b> [{r.get('priority','?')}] "
+                    f"score {float(r['dip_score']):.2f}"
+                    for r in dips
+                )
+                lines.append(f"\n🔔 <b>Dip-kansen:</b>\n{dip_text}")
+        except Exception:
+            pass
+
+    if regime in ("RISK_OFF", "UNKNOWN"):
+        lines.append("\n⏳ Wachten op RISK_ON — geen aankopen.")
+
+    return send_message("\n".join(lines))
+
+
+def handle_telegram_commands(reports_dir: Path) -> int:
+    """
+    Check voor nieuwe Telegram-commando's en beantwoord ze.
+    Verwerkt alle ongelezen berichten van de afgelopen periode.
+
+    Ondersteunde commando's:
+        status / /status  → stuur status overzicht
+
+    Retourneert aantal verwerkte commando's.
+    """
+    if not BOT_TOKEN or not CHAT_ID:
+        return 0
+
+    handled = 0
+    try:
+        r = requests.get(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates",
+            params={"timeout": 2, "allowed_updates": ["message"]},
+            timeout=10,
+        )
+        updates = r.json().get("result", [])
+        if not updates:
+            return 0
+
+        last_id = updates[-1]["update_id"]
+
+        for update in updates:
+            msg = update.get("message", {})
+            text = (msg.get("text") or "").strip().lower()
+            chat_id = str(msg.get("chat", {}).get("id", ""))
+
+            if chat_id != CHAT_ID:
+                continue
+
+            if text in ("status", "/status"):
+                print(f"[Notify] Status-commando ontvangen — rapport sturen...")
+                send_status_report(reports_dir)
+                handled += 1
+
+        # Markeer alle updates als gelezen
+        requests.get(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates",
+            params={"offset": last_id + 1, "timeout": 1},
+            timeout=5,
+        )
+    except Exception as e:
+        print(f"[Notify] Command handler fout: {e}")
+
+    return handled
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -300,6 +491,8 @@ def main():
     ap.add_argument("--test", action="store_true", help="Stuur testbericht")
     ap.add_argument("--daily", action="store_true", help="Stuur dagelijkse samenvatting")
     ap.add_argument("--dips", action="store_true", help="Stuur dip-alert (indien kansen)")
+    ap.add_argument("--status", action="store_true", help="Stuur status overzicht nu")
+    ap.add_argument("--commands", action="store_true", help="Verwerk Telegram commando's")
     ap.add_argument("--reports-dir", type=str, default="data/reports")
     ap.add_argument("--min-dip-score", type=float, default=0.7)
     args = ap.parse_args()
@@ -315,6 +508,12 @@ def main():
     if args.dips:
         ok = send_dip_alert(reports, min_score=args.min_dip_score)
         print(f"Dips: {'OK — alert verstuurd' if ok else 'Geen dips boven drempel'}")
+    if args.status:
+        ok = send_status_report(reports)
+        print(f"Status: {'OK' if ok else 'FAILED'}")
+    if args.commands:
+        n = handle_telegram_commands(reports)
+        print(f"Commands: {n} verwerkt")
 
 
 if __name__ == "__main__":
