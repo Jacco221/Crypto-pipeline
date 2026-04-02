@@ -63,26 +63,40 @@ def send_daily_summary(reports_dir: Path) -> bool:
     md_path = reports_dir / "top5_latest.md"
     alloc_path = reports_dir / "allocation_latest.json"
 
-    if not md_path.exists():
-        return send_message("Pipeline rapport niet gevonden.")
-
-    md = md_path.read_text(encoding="utf-8")
-
-    # Parse regime
+    # Parse regime — uit md of uit regime_latest.json als fallback
     regime = "ONBEKEND"
     regime_line = ""
     advice_line = ""
-    for line in md.splitlines():
-        if line.startswith("> Market regime:"):
-            regime_line = line[2:]  # strip "> "
-            if "RISK_ON" in line:
-                regime = "RISK_ON"
-            elif "CAUTIOUS" in line:
-                regime = "CAUTIOUS"
-            elif "RISK_OFF" in line:
-                regime = "RISK_OFF"
-        if line.startswith("> Advies:"):
-            advice_line = line[2:]
+
+    if md_path.exists():
+        md = md_path.read_text(encoding="utf-8")
+        for line in md.splitlines():
+            if line.startswith("> Market regime:"):
+                regime_line = line[2:]
+                if "RISK_ON" in line:
+                    regime = "RISK_ON"
+                elif "CAUTIOUS" in line:
+                    regime = "CAUTIOUS"
+                elif "RISK_OFF" in line:
+                    regime = "RISK_OFF"
+            if line.startswith("> Advies:"):
+                advice_line = line[2:]
+
+    if regime == "ONBEKEND":
+        regime_path = reports_dir / "regime_latest.json"
+        if regime_path.exists():
+            try:
+                rd = json.loads(regime_path.read_text())
+                regime = rd.get("regime", "ONBEKEND")
+                regime_line = f"Market regime: {regime} (score {rd.get('regime_score','?')})"
+                advice_map = {
+                    "RISK_OFF": "STABLECOIN (risk-off)",
+                    "CAUTIOUS": "HALVE ALLOCATIE (cautious)",
+                    "RISK_ON": "Volg Top-picks (risk-on)",
+                }
+                advice_line = advice_map.get(regime, "")
+            except Exception:
+                pass
 
     # Parse top 3 uit CSV
     scores_path = reports_dir / "scores_latest.csv"
