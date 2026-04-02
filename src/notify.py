@@ -235,8 +235,13 @@ def send_dip_alert(reports_dir: Path, min_score: float = 0.7) -> bool:
     with open(dips_path) as f:
         rows = list(csv.DictReader(f))
 
-    # Filter op minimum score
-    alerts = [r for r in rows if float(r.get("dip_score", 0)) >= min_score]
+    # Filter op minimum score én herstelmomentum (rs_recovery >= 0.3)
+    # Zonder herstel is het geen dip maar een dalende trend
+    alerts = [
+        r for r in rows
+        if float(r.get("dip_score", 0)) >= min_score
+        and float(r.get("rs_recovery", 0)) >= 0.3
+    ]
     if not alerts:
         return False  # geen alert nodig
 
