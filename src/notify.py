@@ -137,6 +137,77 @@ def send_daily_summary(reports_dir: Path) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Scan update — kort bericht elke scan
+# ---------------------------------------------------------------------------
+
+def send_scan_update(reports_dir: Path) -> bool:
+    """
+    Stuur kort statusbericht na elke scan.
+    Altijd verstuurd (ook bij HOLD/RISK_OFF), zodat je weet dat het systeem draait.
+    """
+    import datetime
+
+    # Regime
+    regime = "ONBEKEND"
+    regime_path = reports_dir / "regime_latest.json"
+    if regime_path.exists():
+        try:
+            rd = json.loads(regime_path.read_text())
+            regime = rd.get("regime", "ONBEKEND")
+        except Exception:
+            pass
+
+    regime_emoji = {"RISK_ON": "🟢", "CAUTIOUS": "🟡", "RISK_OFF": "🔴"}.get(regime, "⚪")
+
+    # Posities + P&L
+    pos_text = "USD (geen coin)"
+    try:
+        from src.state import load_positions
+        from src.kraken import find_usd_pair, get_ticker
+        positions = load_positions()
+        if positions:
+            parts = []
+            for pos in positions:
+                sym = pos["symbol"]
+                entry = pos.get("entry_price", 0)
+                try:
+                    pair = find_usd_pair(sym)
+                    if pair and entry:
+                        ticker = get_ticker(pair)
+                        current = ticker.get("last", 0)
+                        pnl = (current - entry) / entry * 100
+                        parts.append(f"{sym} {pnl:+.1f}%")
+                    else:
+                        parts.append(sym)
+                except Exception:
+                    parts.append(sym)
+            pos_text = " | ".join(parts)
+    except Exception:
+        pass
+
+    # Top coin
+    top_text = ""
+    scores_path = reports_dir / "scores_latest.csv"
+    if scores_path.exists():
+        try:
+            import csv
+            with open(scores_path) as f:
+                row = next(csv.DictReader(f), None)
+            if row:
+                top_text = f" | Top: {row['symbol']} {row.get('Total_%','?')}%"
+        except Exception:
+            pass
+
+    now = datetime.datetime.utcnow().strftime("%H:%M UTC")
+
+    msg = (
+        f"{regime_emoji} <b>{regime}</b> — {now}\n"
+        f"Positie: {pos_text}{top_text}"
+    )
+    return send_message(msg)
+
+
+# ---------------------------------------------------------------------------
 # Dip alert
 # ---------------------------------------------------------------------------
 
@@ -575,6 +646,7 @@ def handle_telegram_commands(reports_dir: Path) -> int:
 def main():
     ap = argparse.ArgumentParser(description="Telegram notificaties voor crypto pipeline")
     ap.add_argument("--test", action="store_true", help="Stuur testbericht")
+    ap.add_argument("--scan-update", action="store_true", help="Stuur kort scan-update bericht")
     ap.add_argument("--daily", action="store_true", help="Stuur dagelijkse samenvatting")
     ap.add_argument("--dips", action="store_true", help="Stuur dip-alert (indien kansen)")
     ap.add_argument("--status", action="store_true", help="Stuur status overzicht nu")
@@ -589,6 +661,9 @@ def main():
     if args.test:
         ok = send_message("🧪 <b>Test:</b> Crypto Pipeline notificaties werken!")
         print("OK" if ok else "FAILED")
+    if args.scan_update:
+        ok = send_scan_update(reports)
+        print(f"Scan update: {'OK' if ok else 'FAILED'}")
     if args.daily:
         ok = send_daily_summary(reports)
         print(f"Daily: {'OK' if ok else 'FAILED'}")
