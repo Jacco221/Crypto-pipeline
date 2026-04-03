@@ -36,8 +36,8 @@ OVERRIDE_ADVANTAGE_PCT = 10.0
 
 # Take-Profit / Stop-Loss
 STOP_LOSS_PCT = 0.15         # -15% vanaf entry
-TRAILING_STOP_PCT = 0.12     # -12% vanaf piek
-TRAILING_ACTIVATE_PCT = 0.20  # trailing start pas bij +20% winst
+TRAILING_STOP_PCT = 0.25     # -25% vanaf piek (ruimer voor bull run)
+TRAILING_ACTIVATE_PCT = 0.75  # trailing start pas bij +75% winst
 KRAKEN_HARD_SL_PCT = 0.20    # -20% noodrem op Kraken exchange
 
 
