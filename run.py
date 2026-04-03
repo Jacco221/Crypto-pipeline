@@ -88,8 +88,8 @@ def compute_scores_via_internal_modules(limit: int) -> Optional[pd.DataFrame]:
         df = build_scores(limit=limit)
         if isinstance(df, pd.DataFrame) and "symbol" in df.columns and "score" in df.columns:
             return df
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[Pipeline] build_scores fout: {e}", file=sys.stderr)
 
     # 2) src.scoring.get_scores
     try:

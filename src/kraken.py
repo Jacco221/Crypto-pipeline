@@ -135,6 +135,9 @@ def get_tradeable_symbols() -> set:
         if "/USD" in wsname:
             base = wsname.split("/")[0].upper()
             symbols.add(base)
+            # Kraken gebruikt XBT voor Bitcoin — voeg BTC toe als alias
+            if base == "XBT":
+                symbols.add("BTC")
 
     _tradeable_cache = symbols
     return symbols

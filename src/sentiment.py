@@ -166,7 +166,7 @@ def get_btc_rotation(coins: list) -> dict:
     stables = {"usdt", "usdc", "busd", "dai", "tusd", "usde", "usdp", "fdusd",
                "pyusd", "btc", "eth"}
     alt_7ds = [
-        c.get("price_change_percentage_7d_in_currency", 0.0)
+        float(c.get("price_change_percentage_7d_in_currency") or 0.0)
         for c in coins
         if (c.get("symbol") or "").lower() not in stables
         and (c.get("market_cap") or 0) > 100_000_000
