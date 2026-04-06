@@ -379,7 +379,7 @@ def plan_switch(current_symbol: str, target_symbol: str) -> Dict[str, Any]:
     }
 
 
-def execute_switch(current_symbol: str, target_symbol: str) -> Dict[str, Any]:
+def execute_switch(current_symbol: str, target_symbol: str, max_usd: Optional[float] = None) -> Dict[str, Any]:
     """
     Voer een switch uit: verkoop current → USD → koop target.
     ALLEEN aanroepen na bevestiging van de gebruiker!
@@ -426,8 +426,10 @@ def execute_switch(current_symbol: str, target_symbol: str) -> Dict[str, Any]:
         return {"error": f"Geen USD pair voor {target_symbol}",
                 "sell_txids": sell_txids, "usd_available": usd_available}
 
-    print(f"[Kraken] Koop {target_symbol} met ${usd_available:.2f} via {buy_pair}...")
-    buy_result = place_market_order(buy_pair, "buy", usd_available)
+    # Respecteer max_usd limiet (bijv. bij CAUTIOUS: 50% van totaal)
+    buy_usd = min(usd_available, max_usd) if max_usd else usd_available
+    print(f"[Kraken] Koop {target_symbol} met ${buy_usd:.2f} via {buy_pair}...")
+    buy_result = place_market_order(buy_pair, "buy", buy_usd)
     buy_txids = buy_result.get("txid", [])
     print(f"[Kraken] Koop order geplaatst: {buy_txids}")
 

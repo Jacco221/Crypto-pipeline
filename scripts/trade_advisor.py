@@ -563,7 +563,10 @@ def run_advisor(reports_dir: Path) -> None:
                 send_message(f"❌ Trade planning mislukt: {plan['error']}")
                 return
 
-            result = execute_switch(current["symbol"], target)
+            # Bij CAUTIOUS: max 50% van totaal portfolio in nieuwe coin
+            total_portfolio_usd = current["est_usd"] + action["usd_available"]
+            max_usd = (total_portfolio_usd * 0.5) if regime == "CAUTIOUS" else None
+            result = execute_switch(current["symbol"], target, max_usd=max_usd)
             if result.get("status") == "COMPLETED":
                 ticker = get_ticker(find_usd_pair(target) or "")
                 entry_price_new = ticker.get("last", 0)
