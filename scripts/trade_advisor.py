@@ -683,6 +683,7 @@ def run_advisor(reports_dir: Path) -> None:
             if verification["confirmed"]:
                 entry_price = verification["price"]
                 actual_usd = verification["est_usd"]
+                actual_amount = verification["amount"]
                 save_positions([{
                     "symbol": target,
                     "entry_price": entry_price,
@@ -695,13 +696,24 @@ def run_advisor(reports_dir: Path) -> None:
                     amount_usd=actual_usd, source=source,
                     txids=result_order.get("txid", []),
                 )
+
+                # Plaats stop-loss order op Kraken (-15% van entry)
+                sl_price = round(entry_price * 0.85, 6)
+                sl_note = ""
+                try:
+                    from src.kraken import place_stop_loss_order
+                    place_stop_loss_order(pair, actual_amount, sl_price)
+                    sl_note = f"\n🛑 Stop-loss geplaatst op Kraken: ${sl_price:.4f} (-15%)"
+                except Exception as e:
+                    sl_note = f"\n⚠️ Stop-loss plaatsen mislukt: {e}"
+
                 dip_note = "\n📉 Bron: Dip Finder" if action.get("best_dip") and target == action.get("dip_target") else ""
                 warn = f"\n⚠️ Order response: {order_error}" if order_error else ""
                 send_message(
                     f"{regime_header}\n\n"
                     f"🟢 <b>Aankoop bevestigd op Kraken!</b>\n\n"
                     f"✅ Gekocht: <b>{target}</b> @ ${entry_price:.4f}\n"
-                    f"Bedrag: ~${actual_usd:.2f}{dip_note}{warn}\n"
+                    f"Bedrag: ~${actual_usd:.2f}{dip_note}{sl_note}{warn}\n"
                     f"TX: {', '.join(result_order.get('txid', []))}"
                 )
             else:
