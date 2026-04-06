@@ -21,7 +21,7 @@ from pathlib import Path
 # Zorg dat project root in sys.path staat
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from src.kraken import get_balance, find_usd_pair, plan_switch, execute_switch, get_ticker
+from src.kraken import get_balance, find_usd_pair, plan_switch, execute_switch, get_ticker, verify_position
 from src.notify import send_message, send_trade_proposal, send_trade_result, check_confirmation
 from src.state import (load_position, save_position, clear_position,
                        load_positions, save_positions, clear_positions,
@@ -386,6 +386,12 @@ def determine_action(reports_dir: Path) -> dict:
 
     elif not current and usd_balance > DUST_THRESHOLD_USD:
         # Geen positie, USD beschikbaar → koop pipeline top OF dip-kans
+        # Bij CAUTIOUS: gebruik slechts 50% van beschikbaar USD
+        if regime == "CAUTIOUS":
+            invest_usd = usd_balance * 0.5
+        else:
+            invest_usd = usd_balance
+
         buy_target = target_coin
         buy_reason = f"Pipeline adviseert {target_coin} (score {target_score*100:.1f}%)"
 
@@ -398,9 +404,11 @@ def determine_action(reports_dir: Path) -> dict:
         if buy_target:
             result["action"] = "BUY"
             result["target"] = buy_target
+            result["invest_usd"] = invest_usd
             result["reason"] = (
-                f"Regime is {regime}. Je hebt ${usd_balance:.2f} beschikbaar. "
-                f"{buy_reason}"
+                f"Regime is {regime}. Inzet: ${invest_usd:.2f} "
+                f"({'50% van ' + str(round(usd_balance)) + ' — cautious' if regime == 'CAUTIOUS' else 'volledig'})."
+                f" {buy_reason}"
             )
         else:
             result["action"] = "HOLD"
@@ -591,11 +599,12 @@ def run_advisor(reports_dir: Path) -> None:
             return
 
         if action["action"] == "BUY":
-            usd = action["usd_available"]
+            usd = action.get("invest_usd", action["usd_available"])
             alloc = action.get("alloc_decision", {})
             is_diversify = (
                 alloc.get("decision") == "DIVERSIFY"
                 and len(alloc.get("allocation", {})) >= 2
+                and regime == "RISK_ON"  # Bij CAUTIOUS: altijd 1 coin (50% budget)
             )
 
             if is_diversify:
@@ -605,35 +614,51 @@ def run_advisor(reports_dir: Path) -> None:
                 new_positions = []
                 all_txids = []
                 bought_parts = []
+                failed_parts = []
                 for sym, weight in coins:
                     usd_part = usd * weight
                     pair_part = find_usd_pair(sym)
                     if not pair_part:
+                        failed_parts.append(f"{sym} (geen pair)")
                         continue
-                    result_order = place_market_order(pair_part, "buy", usd_part)
-                    ticker = get_ticker(pair_part)
-                    entry_price = ticker.get("last", 0)
-                    new_positions.append({
-                        "symbol": sym,
-                        "entry_price": entry_price,
-                        "entry_usd": usd_part,
-                        "peak_price": entry_price,
-                        "source": "pipeline_diversify",
-                    })
-                    all_txids.extend(result_order.get("txid", []))
-                    bought_parts.append(f"<b>{sym}</b> ${usd_part:.2f} @ ${entry_price:.4f}")
-                    log_trade(
-                        action="BUY", symbol=sym, price=entry_price,
-                        amount_usd=usd_part, source="pipeline_diversify",
-                        txids=result_order.get("txid", []),
-                    )
+                    order_err = None
+                    result_order = {}
+                    try:
+                        result_order = place_market_order(pair_part, "buy", usd_part)
+                    except Exception as e:
+                        order_err = str(e)
 
-                save_positions(new_positions)
+                    # Verificeer werkelijke balans op Kraken
+                    verif = verify_position(sym)
+                    if verif["confirmed"]:
+                        entry_price = verif["price"]
+                        actual_usd = verif["est_usd"]
+                        new_positions.append({
+                            "symbol": sym,
+                            "entry_price": entry_price,
+                            "entry_usd": actual_usd,
+                            "peak_price": entry_price,
+                            "source": "pipeline_diversify",
+                        })
+                        all_txids.extend(result_order.get("txid", []))
+                        bought_parts.append(f"✅ <b>{sym}</b> ~${actual_usd:.2f} @ ${entry_price:.4f}")
+                        log_trade(
+                            action="BUY", symbol=sym, price=entry_price,
+                            amount_usd=actual_usd, source="pipeline_diversify",
+                            txids=result_order.get("txid", []),
+                        )
+                    else:
+                        failed_parts.append(f"❌ {sym}: {order_err or 'niet gevonden op Kraken'}")
+
+                if new_positions:
+                    save_positions(new_positions)
+                fail_text = ("\n\n⚠️ Mislukt:\n" + "\n".join(failed_parts)) if failed_parts else ""
                 send_message(
                     f"{regime_header}\n\n"
-                    f"🟢 <b>Automatisch gekocht — Diversificatie</b>\n\n"
+                    f"🟢 <b>Diversificatie aankopen bevestigd</b>\n\n"
                     + "\n".join(bought_parts) +
-                    f"\n\nTotaal: ${usd:.2f}"
+                    fail_text +
+                    f"\n\nTotaal ingezet: ${usd:.2f}"
                 )
                 return
 
@@ -644,30 +669,51 @@ def run_advisor(reports_dir: Path) -> None:
                 return
 
             from src.kraken import place_market_order
-            result_order = place_market_order(pair, "buy", usd)
-            ticker = get_ticker(pair)
-            entry_price = ticker.get("last", 0)
+            order_error = None
+            result_order = {}
+            try:
+                result_order = place_market_order(pair, "buy", usd)
+            except Exception as e:
+                order_error = str(e)
+
+            # Verificeer altijd de werkelijke Kraken balans — ongeacht order response
+            verification = verify_position(target)
             source = "dip_finder" if action.get("best_dip") else "pipeline"
-            save_positions([{
-                "symbol": target,
-                "entry_price": entry_price,
-                "entry_usd": usd,
-                "peak_price": entry_price,
-                "source": source,
-            }])
-            log_trade(
-                action="BUY", symbol=target, price=entry_price,
-                amount_usd=usd, source=source,
-                txids=result_order.get("txid", []),
-            )
-            dip_note = "\n📉 Bron: Dip Finder" if action.get("best_dip") and target == action.get("dip_target") else ""
-            send_message(
-                f"{regime_header}\n\n"
-                f"🟢 <b>Automatisch gekocht!</b>\n\n"
-                f"Gekocht: <b>{target}</b> @ ${entry_price:.4f}\n"
-                f"Bedrag: ${usd:.2f}{dip_note}\n"
-                f"TX: {', '.join(result_order.get('txid', []))}"
-            )
+
+            if verification["confirmed"]:
+                entry_price = verification["price"]
+                actual_usd = verification["est_usd"]
+                save_positions([{
+                    "symbol": target,
+                    "entry_price": entry_price,
+                    "entry_usd": actual_usd,
+                    "peak_price": entry_price,
+                    "source": source,
+                }])
+                log_trade(
+                    action="BUY", symbol=target, price=entry_price,
+                    amount_usd=actual_usd, source=source,
+                    txids=result_order.get("txid", []),
+                )
+                dip_note = "\n📉 Bron: Dip Finder" if action.get("best_dip") and target == action.get("dip_target") else ""
+                warn = f"\n⚠️ Order response: {order_error}" if order_error else ""
+                send_message(
+                    f"{regime_header}\n\n"
+                    f"🟢 <b>Aankoop bevestigd op Kraken!</b>\n\n"
+                    f"✅ Gekocht: <b>{target}</b> @ ${entry_price:.4f}\n"
+                    f"Bedrag: ~${actual_usd:.2f}{dip_note}{warn}\n"
+                    f"TX: {', '.join(result_order.get('txid', []))}"
+                )
+            else:
+                # Positie staat NIET op Kraken
+                err = order_error or verification.get("error", "onbekend")
+                send_message(
+                    f"{regime_header}\n\n"
+                    f"❌ <b>Aankoop mislukt — verificatie gefaald</b>\n\n"
+                    f"Target: <b>{target}</b>\n"
+                    f"Reden: {err}\n\n"
+                    f"Geen positie opgeslagen. Controleer je Kraken saldo."
+                )
 
 
 # ---------------------------------------------------------------------------

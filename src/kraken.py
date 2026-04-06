@@ -222,6 +222,50 @@ def place_market_order(pair: str, side: str, volume: float) -> Dict[str, Any]:
     return result
 
 
+def verify_position(symbol: str, min_usd: float = 5.0) -> dict:
+    """
+    Verifieer na een trade of de positie werkelijk op Kraken staat.
+    Geeft terug: {confirmed, symbol, amount, est_usd, price}
+    """
+    try:
+        balances = get_balance()
+        # Zoek het asset in balans
+        for asset, amount in balances.items():
+            if amount <= 0:
+                continue
+            # Normaliseer asset naam naar symbol
+            s = asset.replace("X", "").replace("Z", "")
+            if asset == "XXBT":
+                s = "BTC"
+            elif asset == "XETH":
+                s = "ETH"
+            elif asset == "XXDG":
+                s = "DOGE"
+            elif asset == "XXRP":
+                s = "XRP"
+
+            if s.upper() == symbol.upper():
+                pair = find_usd_pair(symbol)
+                price = 0.0
+                est_usd = 0.0
+                if pair:
+                    ticker = get_ticker(pair)
+                    price = ticker.get("last", 0)
+                    est_usd = amount * price
+                if est_usd >= min_usd:
+                    return {
+                        "confirmed": True,
+                        "symbol": symbol,
+                        "amount": amount,
+                        "est_usd": round(est_usd, 2),
+                        "price": price,
+                    }
+    except Exception as e:
+        return {"confirmed": False, "error": str(e)}
+
+    return {"confirmed": False, "symbol": symbol, "amount": 0, "est_usd": 0}
+
+
 def place_stop_loss_order(pair: str, volume: float, stop_price: float) -> Dict[str, Any]:
     """
     Plaats een stop-loss order op Kraken (noodrem, -20%).
