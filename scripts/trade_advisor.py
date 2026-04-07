@@ -345,10 +345,20 @@ def determine_action(reports_dir: Path) -> dict:
                 f"Regime is {regime}. Je zit al in {current['symbol']} "
                 f"(top coin, score {target_score*100:.1f}%)."
             )
-            # Je zit al in de #1 pipeline coin — nooit switchen naar dip coin.
-            # Dip coins zijn alleen interessant als je in USD of lagere coin zit.
+            # Dip coin kan top coin verslaan, maar alleen bij hoge score + RISK_ON
             if dip_target:
-                dip_reason += " (geen actie — je zit al in top coin)"
+                dip_score_val = float(action.get("best_dip", {}).get("dip_score", 0)) if action.get("best_dip") else 0
+                if dip_score_val >= 0.85 and regime == "RISK_ON":
+                    result["action"] = "SWITCH"
+                    result["target"] = dip_target
+                    result["reason"] = (
+                        f"{hold_reason} Maar: {dip_reason} "
+                        f"(score {dip_score_val:.2f} >= 0.85 + RISK_ON → switch)"
+                    )
+                    return result
+                else:
+                    why = "score onder 0.85" if dip_score_val < 0.85 else "regime niet RISK_ON"
+                    dip_reason += f" (geen actie — {why})"
 
             result["action"] = "HOLD"
             result["reason"] = hold_reason
