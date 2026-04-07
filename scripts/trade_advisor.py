@@ -41,7 +41,10 @@ DUST_THRESHOLD_USD = 5.0  # onder $5 = stof
 
 
 def _asset_to_symbol(asset: str) -> str:
-    """Converteer Kraken asset naam naar coin symbol."""
+    """
+    Converteer Kraken asset naam naar coin symbol.
+    Valideert via find_usd_pair() zodat ook onbekende X/Z-coins correct werken.
+    """
     # Bekende Kraken-specifieke namen eerst
     known = {
         "XXBT": "BTC", "XETH": "ETH", "XXDG": "DOGE",
@@ -50,10 +53,18 @@ def _asset_to_symbol(asset: str) -> str:
     }
     if asset in known:
         return known[asset]
-    # Verwijder alleen leading X of Z als het geen bekende ticker is
-    # maar alleen als het resultaat ook een geldig pair heeft
-    if len(asset) > 3 and asset.startswith(("XX", "XZ")):
-        return asset[1:]
+
+    # Probeer originele naam eerst (bijv. XPL, ZEC)
+    if find_usd_pair(asset):
+        return asset
+
+    # Probeer zonder leading X (bijv. XXBT → XBT, maar XPL blijft XPL via bovenstaande)
+    if len(asset) > 3 and asset.startswith("X"):
+        stripped = asset[1:]
+        if find_usd_pair(stripped):
+            return stripped
+
+    # Fallback: originele naam
     return asset
 
 
