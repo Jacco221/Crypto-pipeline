@@ -39,9 +39,21 @@ if not current_sym:
     send_message("❌ Geen positie gevonden om te switchen.")
     sys.exit(1)
 
+# Bepaal max_usd op basis van regime (CAUTIOUS = 50%)
+from src.market_regime import determine_market_regime
+regime_data = determine_market_regime()
+regime = regime_data["regime"]
+
+usd_balance = balances.get("ZUSD", balances.get("USD", 0))
+ticker_current = get_ticker(find_usd_pair(current_sym) or "")
+current_usd = current_amount * ticker_current.get("last", 0)
+total_portfolio = usd_balance + current_usd
+max_usd = total_portfolio * 0.5 if regime == "CAUTIOUS" else None
+print(f"Regime: {regime} | Portfolio: ${total_portfolio:.2f} | Max invest: ${max_usd:.2f if max_usd else total_portfolio:.2f}")
+
 # Voer switch uit
 print(f"Switch {current_sym} → {TARGET}...")
-result = execute_switch(current_sym, TARGET)
+result = execute_switch(current_sym, TARGET, max_usd=max_usd)
 
 # Verificeer
 verif = verify_position(TARGET)

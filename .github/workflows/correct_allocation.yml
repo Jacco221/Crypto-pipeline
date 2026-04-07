@@ -27,6 +27,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Switch terug naar top coin (XPL)
+      - name: Corrigeer allocatie naar 50/50
         run: |
-          python3 scripts/switch_to_top_coin.py
+          python3 scripts/correct_allocation.py
