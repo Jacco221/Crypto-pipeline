@@ -40,6 +40,23 @@ IGNORE_ASSETS = {"ZUSD", "USD", "ZEUR", "EUR", "USDC", "USDG", "USDT"}
 DUST_THRESHOLD_USD = 5.0  # onder $5 = stof
 
 
+def _asset_to_symbol(asset: str) -> str:
+    """Converteer Kraken asset naam naar coin symbol."""
+    # Bekende Kraken-specifieke namen eerst
+    known = {
+        "XXBT": "BTC", "XETH": "ETH", "XXDG": "DOGE",
+        "XXRP": "XRP", "XLTC": "LTC", "XXLM": "XLM",
+        "XZEC": "ZEC", "XXMR": "XMR",
+    }
+    if asset in known:
+        return known[asset]
+    # Verwijder alleen leading X of Z als het geen bekende ticker is
+    # maar alleen als het resultaat ook een geldig pair heeft
+    if len(asset) > 3 and asset.startswith(("XX", "XZ")):
+        return asset[1:]
+    return asset
+
+
 def get_all_positions() -> list:
     """
     Geeft alle niet-stablecoin posities op Kraken (voor multi-coin portfolio).
@@ -51,15 +68,7 @@ def get_all_positions() -> list:
         if asset in IGNORE_ASSETS or amount <= 0:
             continue
 
-        symbol = asset.replace("X", "").replace("Z", "")
-        if asset == "XXBT":
-            symbol = "BTC"
-        elif asset == "XETH":
-            symbol = "ETH"
-        elif asset == "XXDG":
-            symbol = "DOGE"
-        elif asset == "XXRP":
-            symbol = "XRP"
+        symbol = _asset_to_symbol(asset)
 
         pair = find_usd_pair(symbol)
         if not pair:
@@ -95,17 +104,7 @@ def get_current_position() -> dict:
         if asset in IGNORE_ASSETS or amount <= 0:
             continue
 
-        # Probeer USD waarde te schatten
-        # Kraken asset namen: XXBT=BTC, XETH=ETH, XXDG=DOGE, etc.
-        symbol = asset.replace("X", "").replace("Z", "")
-        if asset == "XXBT":
-            symbol = "BTC"
-        elif asset == "XETH":
-            symbol = "ETH"
-        elif asset == "XXDG":
-            symbol = "DOGE"
-        elif asset == "XXRP":
-            symbol = "XRP"
+        symbol = _asset_to_symbol(asset)
 
         pair = find_usd_pair(symbol)
         if not pair:
