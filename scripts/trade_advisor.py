@@ -508,9 +508,25 @@ def run_advisor(reports_dir: Path) -> None:
     if action["action"] == "HOLD":
         dip_info = ""
         if action.get("dip_reason"):
-            dip_info = f"\n\n🔔 {action['dip_reason']}"
+            dip_reason = action["dip_reason"]
+            dip_score = float(action.get("best_dip", {}).get("dip_score", 0)) if action.get("best_dip") else 0
+
             if regime == "RISK_OFF":
-                dip_info += "\n⚠️ Nog niet instappen — wacht op regime-wissel."
+                dip_info = (
+                    f"\n\n🔔 Dip gesignaleerd: {dip_reason}\n"
+                    f"❌ Geen actie — regime is RISK_OFF (wacht op CAUTIOUS/RISK_ON)"
+                )
+            elif dip_score >= 0.8:
+                dip_info = (
+                    f"\n\n🔔 Dip gesignaleerd: {dip_reason}\n"
+                    f"⏳ Geen actie — al in beste coin of cooldown actief"
+                )
+            else:
+                dip_info = (
+                    f"\n\n🔔 Dip gesignaleerd: {dip_reason}\n"
+                    f"❌ Geen actie — score {dip_score:.2f} onder drempel 0.80 voor switch"
+                )
+
         send_message(f"{regime_header}\n\n📊 {action['reason']}{pnl_text}{dip_info}")
         return
 
