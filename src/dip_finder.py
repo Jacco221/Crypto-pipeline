@@ -43,6 +43,37 @@ DIP_24H_THRESHOLD = -8.0    # minimaal -8% in 24h
 DIP_7D_THRESHOLD = -15.0    # OF minimaal -15% in 7d
 
 
+def _is_pump_and_dump(coin: dict) -> bool:
+    """
+    Detecteer pump & dump patroon in sparkline.
+    Signaal: piek van >40% boven start van de week, gevolgd door crash terug.
+    KTA-patroon: spike naar 0.22 dan crash naar 0.15 = pump & dump.
+    """
+    sparkline = coin.get("sparkline_in_7d", {}).get("price", [])
+    if len(sparkline) < 24:
+        return False
+
+    prices = np.array(sparkline, dtype=float)
+    if prices[0] <= 0:
+        return False
+
+    start_price = prices[0]
+    max_price = np.max(prices)
+    current_price = prices[-1]
+
+    # Piek was >40% boven startprijs
+    peak_gain = (max_price - start_price) / start_price
+    if peak_gain < 0.40:
+        return False
+
+    # Na de piek is de prijs >30% gedaald (crash na pump)
+    crash_from_peak = (max_price - current_price) / max_price
+    if crash_from_peak < 0.30:
+        return False
+
+    return True  # pump & dump gedetecteerd
+
+
 def _is_dip_candidate(coin: dict, btc_24h: float, btc_7d: float) -> bool:
     """Check of een coin voldoet aan de harde dip-criteria."""
     mcap = coin.get("market_cap") or 0
@@ -66,6 +97,10 @@ def _is_dip_candidate(coin: dict, btc_24h: float, btc_7d: float) -> bool:
     isolated_24h = change_24h < btc_24h - 3.0  # minimaal 3pp slechter dan BTC
     isolated_7d = change_7d < btc_7d - 5.0     # minimaal 5pp slechter dan BTC
     if not (isolated_24h or isolated_7d):
+        return False
+
+    # Pump & dump filter — sluit coins uit die vanaf een kunstmatige piek dalen
+    if _is_pump_and_dump(coin):
         return False
 
     return True
