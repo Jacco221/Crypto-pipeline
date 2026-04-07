@@ -3,7 +3,9 @@ name: Daily Crypto Pipeline
 on:
   workflow_dispatch: {}
   schedule:
-    - cron: "5 6 * * *"     # Dagelijks 06:05 UTC (08:05 NL-tijd zomer)
+    - cron: "5 6 * * *"     # 08:05 NL-tijd
+    - cron: "5 12 * * *"    # 14:05 NL-tijd
+    - cron: "5 18 * * *"    # 20:05 NL-tijd
 
 permissions:
   contents: write

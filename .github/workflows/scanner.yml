@@ -3,11 +3,9 @@ name: Dip & Regime Scanner
 on:
   workflow_dispatch: {}
   schedule:
-    - cron: "5 0 * * *"     # 02:05 NL-tijd (zomer)
+    - cron: "5 0 * * *"     # 02:05 NL-tijd
     - cron: "5 8 * * *"     # 10:05 NL-tijd
-    - cron: "5 12 * * *"    # 14:05 NL-tijd
     - cron: "5 16 * * *"    # 18:05 NL-tijd
-    - cron: "5 20 * * *"    # 22:05 NL-tijd
 
 # 08:05 NL-tijd zit in de volledige pipeline (pipeline.yml)
 
