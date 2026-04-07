@@ -345,18 +345,10 @@ def determine_action(reports_dir: Path) -> dict:
                 f"Regime is {regime}. Je zit al in {current['symbol']} "
                 f"(top coin, score {target_score*100:.1f}%)."
             )
-            # Maar is er een betere dip-kans?
+            # Je zit al in de #1 pipeline coin — nooit switchen naar dip coin.
+            # Dip coins zijn alleen interessant als je in USD of lagere coin zit.
             if dip_target:
-                # Check cooldown voor switch naar dip
-                switch = should_switch(current_score, 0.8)  # dip = hoge urgentie
-                if switch["switch"]:
-                    result["action"] = "SWITCH"
-                    result["target"] = dip_target
-                    result["reason"] = (
-                        f"{hold_reason} Maar: {dip_reason} "
-                        f"Overweeg switch naar dip-kans."
-                    )
-                    return result
+                dip_reason += " (geen actie — je zit al in top coin)"
 
             result["action"] = "HOLD"
             result["reason"] = hold_reason
