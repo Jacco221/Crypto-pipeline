@@ -839,7 +839,7 @@ def run_advisor(reports_dir: Path) -> None:
                 )
 
                 # Plaats stop-loss order op Kraken (-15% van entry)
-                sl_price = round(entry_price * 0.85, 6)
+                sl_price = round(entry_price * 0.85, 4)
                 sl_note = ""
                 try:
                     from src.kraken import place_stop_loss_order

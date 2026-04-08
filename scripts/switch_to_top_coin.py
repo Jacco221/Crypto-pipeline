@@ -85,8 +85,8 @@ if verif["confirmed"]:
         "source": "manual_correction",
     }])
 
-    # Stop-loss plaatsen
-    sl_price = round(entry_price * 0.85, 6)
+    # Stop-loss plaatsen — max 4 decimalen (Kraken vereiste)
+    sl_price = round(entry_price * 0.85, 4)
     try:
         from src.kraken import place_stop_loss_order
         actual_amount = verif["amount"]
@@ -96,9 +96,9 @@ if verif["confirmed"]:
         sl_note = f"\n⚠️ Stop-loss mislukt: {e}"
 
     send_message(
-        f"✅ <b>Terug in Plasma (XPL)</b>\n\n"
-        f"Verkocht: KTA\n"
-        f"Gekocht: <b>XPL</b> @ ${entry_price:.4f}\n"
+        f"✅ <b>Terug in {TARGET}</b>\n\n"
+        f"Verkocht: <b>{current_sym}</b>\n"
+        f"Gekocht: <b>{TARGET}</b> @ ${entry_price:.4f}\n"
         f"Bedrag: ~${actual_usd:.2f}"
         f"{sl_note}"
     )
