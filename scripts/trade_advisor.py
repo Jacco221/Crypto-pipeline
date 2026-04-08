@@ -354,7 +354,7 @@ def determine_action(reports_dir: Path) -> dict:
             )
             # Dip coin kan top coin verslaan, maar alleen bij hoge score + RISK_ON
             if dip_target:
-                dip_score_val = float(action.get("best_dip", {}).get("dip_score", 0)) if action.get("best_dip") else 0
+                dip_score_val = float(best_dip.get("dip_score", 0)) if best_dip else 0
                 if dip_score_val >= 0.85 and regime == "RISK_ON":
                     result["action"] = "SWITCH"
                     result["target"] = dip_target
