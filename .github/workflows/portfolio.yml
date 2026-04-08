@@ -1,0 +1,91 @@
+name: Portfolio Status
+
+on:
+  workflow_dispatch: {}
+
+env:
+  PYTHONUNBUFFERED: "1"
+  TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+  TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+  KRAKEN_API_KEY: ${{ secrets.KRAKEN_API_KEY }}
+  KRAKEN_API_SECRET: ${{ secrets.KRAKEN_API_SECRET }}
+
+jobs:
+  portfolio:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Stuur portfolio naar Telegram
+        run: |
+          python3 - <<'PY'
+          import sys, os
+          sys.path.insert(0, ".")
+          from src.kraken import get_balance, find_usd_pair, get_ticker
+          from src.notify import send_message
+
+          IGNORE = {"ZUSD", "USD", "ZEUR", "EUR", "USDC", "USDG", "USDT"}
+
+          KNOWN = {
+              "XXBT": "BTC", "XETH": "ETH", "XXDG": "DOGE",
+              "XXRP": "XRP", "XLTC": "LTC", "XXLM": "XLM",
+              "XZEC": "ZEC", "XXMR": "XMR",
+          }
+
+          def normalize(asset):
+              if asset in KNOWN:
+                  return KNOWN[asset]
+              if find_usd_pair(asset):
+                  return asset
+              if len(asset) > 3 and asset.startswith("X"):
+                  stripped = asset[1:]
+                  if find_usd_pair(stripped):
+                      return stripped
+              return asset
+
+          balances = get_balance()
+          lines = []
+          total = 0.0
+
+          usd = balances.get("ZUSD", balances.get("USD", 0))
+          if usd >= 0.01:
+              lines.append(f"  💵 USD: <b>${usd:.2f}</b>")
+              total += usd
+
+          for asset, amount in balances.items():
+              if asset in IGNORE or amount <= 0:
+                  continue
+              sym = normalize(asset)
+              pair = find_usd_pair(sym) or find_usd_pair(asset)
+              if not pair:
+                  if amount >= 0.01:
+                      lines.append(f"  🪙 {sym}: {amount:.6f} (geen prijs)")
+                  continue
+              ticker = get_ticker(pair)
+              price = ticker.get("last", 0)
+              est = amount * price
+              if est >= 1:
+                  lines.append(f"  🪙 <b>{sym}</b>: {amount:.4f} @ ${price:.4f} = <b>${est:.2f}</b>")
+                  total += est
+
+          portfolio_text = "\n".join(lines) if lines else "  (leeg)"
+          msg = (
+              f"💼 <b>Jouw Kraken Portfolio</b>\n\n"
+              f"{portfolio_text}\n\n"
+              f"  ─────────────────\n"
+              f"  📊 Totaal: <b>${total:.2f}</b>"
+          )
+          ok = send_message(msg)
+          print("Verzonden naar Telegram:", ok)
+          PY
