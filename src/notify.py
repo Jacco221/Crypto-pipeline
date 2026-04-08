@@ -173,33 +173,51 @@ def send_scan_update(reports_dir: Path) -> bool:
 
     regime_emoji = {"RISK_ON": "🟢", "CAUTIOUS": "🟡", "RISK_OFF": "🔴"}.get(regime, "⚪")
 
-    # Posities + P&L
-    pos_text = "USD (geen coin)"
+    # Portfolio — lees rechtstreeks van Kraken (niet van gitignored state file)
+    portfolio_lines = ""
+    total_portfolio_usd = 0.0
+    action_text = "⏸ Geen actie"
     try:
+        from src.kraken import get_balance, find_usd_pair, get_ticker
         from src.state import load_positions
-        from src.kraken import find_usd_pair, get_ticker
-        positions = load_positions()
-        if positions:
-            parts = []
-            for pos in positions:
-                sym = pos["symbol"]
-                entry = pos.get("entry_price", 0)
-                try:
-                    pair = find_usd_pair(sym)
-                    if pair and entry:
-                        ticker = get_ticker(pair)
-                        current = ticker.get("last", 0)
-                        pnl = (current - entry) / entry * 100
-                        parts.append(f"{sym} {pnl:+.1f}%")
-                    else:
-                        parts.append(sym)
-                except Exception:
-                    parts.append(sym)
-            pos_text = " | ".join(parts)
-    except Exception:
-        pass
+        IGNORE = {"ZUSD", "USD", "ZEUR", "EUR", "USDC", "USDG", "USDT"}
+        balances = get_balance()
 
-    # Top coin
+        # USD saldo
+        usd_bal = balances.get("ZUSD", balances.get("USD", 0))
+        if usd_bal > 1:
+            portfolio_lines += f"  💵 USD: ${usd_bal:.2f}\n"
+            total_portfolio_usd += usd_bal
+
+        # Crypto posities
+        saved = {p["symbol"].upper(): p for p in load_positions()}
+        for asset, amount in balances.items():
+            if asset in IGNORE or amount <= 0:
+                continue
+            # Normaliseer symbol
+            sym = asset
+            if asset == "XXBT": sym = "BTC"
+            elif asset == "XETH": sym = "ETH"
+            pair = find_usd_pair(sym) or find_usd_pair(asset)
+            if not pair:
+                continue
+            try:
+                ticker = get_ticker(pair)
+                price = ticker.get("last", 0)
+                est_usd = amount * price
+                if est_usd < 5:
+                    continue
+                total_portfolio_usd += est_usd
+                # P&L vs entry
+                entry = saved.get(sym.upper(), {}).get("entry_price", 0)
+                pnl_str = f" ({(price-entry)/entry*100:+.1f}%)" if entry else ""
+                portfolio_lines += f"  🪙 {sym}: {amount:.4f} (~${est_usd:.2f}){pnl_str}\n"
+            except Exception:
+                pass
+    except Exception:
+        portfolio_lines = "  (Kraken niet bereikbaar)\n"
+
+    # Top coin uit scores
     top_text = ""
     scores_path = reports_dir / "scores_latest.csv"
     if scores_path.exists():
@@ -208,15 +226,26 @@ def send_scan_update(reports_dir: Path) -> bool:
             with open(scores_path) as f:
                 row = next(csv.DictReader(f), None)
             if row:
-                top_text = f" | Top: {row['symbol']} {row.get('Total_%','?')}%"
+                top_text = f"🏆 Top coin: <b>{row['symbol']}</b> ({row.get('Total_%','?')}%)\n"
         except Exception:
             pass
 
+    # Actie bepalen op basis van regime
+    if regime == "RISK_OFF":
+        action_text = "⏸ Geen actie — wachten op herstel"
+    elif regime == "CAUTIOUS":
+        action_text = "⏸ Geen actie — al in positie of wachten"
+    elif regime == "RISK_ON":
+        action_text = "✅ Actief handelen"
+
     now = datetime.datetime.utcnow().strftime("%H:%M UTC")
+    total_str = f"  💼 Totaal: ~${total_portfolio_usd:.2f}\n" if total_portfolio_usd > 0 else ""
 
     msg = (
-        f"{regime_emoji} <b>{regime}</b> — {now}\n"
-        f"Positie: {pos_text}{top_text}"
+        f"{regime_emoji} <b>{regime}</b> — {now}\n\n"
+        f"<b>Portfolio:</b>\n{portfolio_lines}{total_str}\n"
+        f"{top_text}"
+        f"{action_text}"
     )
     return send_message(msg)
 
