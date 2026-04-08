@@ -39,6 +39,12 @@ if not current_sym:
     send_message("❌ Geen positie gevonden om te switchen.")
     sys.exit(1)
 
+# Al in de target coin — geen switch nodig
+if current_sym.upper() == TARGET.upper():
+    send_message(f"✅ Al in {TARGET} ({current_amount:.0f} coins ~${est_usd:.2f}) — geen switch nodig.")
+    print(f"Al in {TARGET}, geen actie.")
+    sys.exit(0)
+
 # Bepaal max_usd op basis van regime (CAUTIOUS = 50%)
 from src.market_regime import determine_market_regime
 regime_data = determine_market_regime()
