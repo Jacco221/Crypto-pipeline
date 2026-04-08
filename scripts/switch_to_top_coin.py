@@ -52,6 +52,16 @@ max_usd = total_portfolio * 0.5 if regime == "CAUTIOUS" else None
 max_invest = max_usd if max_usd else total_portfolio
 print(f"Regime: {regime} | Portfolio: ${total_portfolio:.2f} | Max invest: ${max_invest:.2f}")
 
+# Annuleer eerst alle open orders (bijv. stop-loss die coins blokkeert)
+print(f"Annuleer open orders voor {current_sym}...")
+try:
+    from src.kraken import cancel_all_orders
+    cancel_result = cancel_all_orders()
+    print(f"Open orders geannuleerd: {cancel_result}")
+    import time; time.sleep(2)  # Wacht tot annulering verwerkt is
+except Exception as e:
+    print(f"Waarschuwing: orders annuleren mislukt: {e}")
+
 # Voer switch uit
 print(f"Switch {current_sym} → {TARGET}...")
 result = execute_switch(current_sym, TARGET, max_usd=max_usd)

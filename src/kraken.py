@@ -395,7 +395,15 @@ def execute_switch(current_symbol: str, target_symbol: str, max_usd: Optional[fl
     if current_amount <= 0:
         return {"error": f"Geen {current_symbol} gevonden in account"}
 
-    # 2. Verkoop naar USD
+    # 2. Annuleer open orders zodat coins niet geblokkeerd zijn (bijv. stop-loss)
+    try:
+        print(f"[Kraken] Annuleer open orders voor {current_symbol}...")
+        cancel_all_orders()
+        time.sleep(2)  # Wacht tot annulering verwerkt is op Kraken
+    except Exception as e:
+        print(f"[Kraken] Waarschuwing: orders annuleren mislukt: {e}")
+
+    # 3. Verkoop naar USD
     sell_pair = find_usd_pair(current_symbol)
     if not sell_pair:
         return {"error": f"Geen USD pair voor {current_symbol}"}
