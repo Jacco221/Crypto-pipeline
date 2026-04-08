@@ -209,12 +209,19 @@ def determine_action(reports_dir: Path) -> dict:
             if float(top_dip.get("dip_score", 0)) >= 0.7:
                 best_dip = top_dip
 
-    # 4. Huidige Kraken positie
-    current = get_current_position()
+    # 4. Huidige Kraken positie — lees ALTIJD direct van Kraken (niet van state file)
+    all_kraken_positions = get_all_positions()
+    current = all_kraken_positions[0] if all_kraken_positions else None
     usd_balance = 0
     for asset, amount in get_balance().items():
         if asset in ("ZUSD", "USD"):
             usd_balance = amount
+
+    # Veiligheidscheck: als er al crypto op Kraken staat, nooit extra kopen
+    # Dit voorkomt dubbele posities als positions.json leeg/outdated is
+    if current and len(all_kraken_positions) > 0:
+        # Zet current altijd op de grootste Kraken positie
+        current = max(all_kraken_positions, key=lambda x: x["est_usd"])
 
     # 5. Beslislogica
     result = {
