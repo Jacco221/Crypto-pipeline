@@ -154,6 +154,48 @@ def get_current_position() -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Portfolio snapshot helpers — voor/na check bij elke trade
+# ---------------------------------------------------------------------------
+
+def _portfolio_snapshot() -> dict:
+    """
+    Neem een momentopname van het huidige Kraken portfolio.
+    Gebruikt als voor- en nameting bij elke trade.
+    """
+    try:
+        from src.kraken import get_balance
+        balances = get_balance()
+        usd = balances.get("ZUSD", balances.get("USD", 0))
+        positions = get_all_positions()
+        total = round(usd + sum(p["est_usd"] for p in positions), 2)
+        return {"usd": round(usd, 2), "positions": positions, "total_usd": total, "ok": True}
+    except Exception as e:
+        return {"usd": 0, "positions": [], "total_usd": 0, "ok": False, "error": str(e)}
+
+
+def _snapshot_text(snapshot: dict, label: str = "") -> str:
+    """Maak leesbare tekst van een portfolio snapshot."""
+    header = f"<b>{label}</b>\n" if label else ""
+    lines = []
+    for p in snapshot.get("positions", []):
+        lines.append(f"  🪙 {p['symbol']}: {p['amount']:.4f} (~${p['est_usd']:.2f})")
+    usd = snapshot.get("usd", 0)
+    if usd >= 1:
+        lines.append(f"  💵 USD: ${usd:.2f}")
+    lines.append(f"  📊 Totaal: <b>${snapshot.get('total_usd', 0):.2f}</b>")
+    if not snapshot.get("ok"):
+        lines.append(f"  ⚠️ Snapshot fout: {snapshot.get('error', '?')}")
+    return header + "\n".join(lines)
+
+
+def _compare_snapshots(before: dict, after: dict) -> str:
+    """Vergelijk twee snapshots en toon verschil in portfolio waarde."""
+    diff = after.get("total_usd", 0) - before.get("total_usd", 0)
+    diff_str = f"{diff:+.2f}"
+    return f"  📈 Portfoliowaarde: ${before.get('total_usd',0):.2f} → ${after.get('total_usd',0):.2f} ({diff_str})"
+
+
+# ---------------------------------------------------------------------------
 # Bepaal welke actie nodig is
 # ---------------------------------------------------------------------------
 
@@ -571,6 +613,14 @@ def run_advisor(reports_dir: Path) -> None:
             send_message(f"{regime_header}\n\nGeen posities om te verkopen.")
             return
 
+        # ── VOOR-snapshot ──
+        snap_before = _portfolio_snapshot()
+        send_message(
+            f"{regime_header}\n\n"
+            f"🔴 <b>Verkoop naar USD gestart</b>\n\n"
+            f"<b>Portfolio VOOR:</b>\n{_snapshot_text(snap_before)}"
+        )
+
         from src.kraken import place_market_order
         all_txids = []
         sold_parts = []
@@ -602,12 +652,16 @@ def run_advisor(reports_dir: Path) -> None:
                 txids=result_order.get("txid", []),
             )
         clear_positions()
-        total_usd = sum(p["est_usd"] for p in all_pos)
+
+        # ── NA-snapshot ──
+        import time as _time; _time.sleep(3)
+        snap_after = _portfolio_snapshot()
         send_message(
             f"{regime_header}\n\n"
-            f"🔴 <b>Automatisch verkocht naar USD</b>\n\n"
-            f"Verkocht: {' + '.join(sold_parts)}\n"
-            f"Totaal: ~${total_usd:.2f}\n"
+            f"🔴 <b>Verkoop voltooid</b>\n\n"
+            f"Verkocht: {' + '.join(sold_parts)}\n\n"
+            f"<b>Portfolio NA:</b>\n{_snapshot_text(snap_after)}\n\n"
+            f"{_compare_snapshots(snap_before, snap_after)}\n"
             f"TX: {', '.join(all_txids)}"
         )
         return
@@ -623,9 +677,18 @@ def run_advisor(reports_dir: Path) -> None:
                 send_message(f"❌ Trade planning mislukt: {plan['error']}")
                 return
 
-            # Bij CAUTIOUS: max 50% van totaal portfolio in nieuwe coin
+            # ── VOOR-snapshot ──
+            snap_before = _portfolio_snapshot()
             total_portfolio_usd = current["est_usd"] + action["usd_available"]
             max_usd = (total_portfolio_usd * 0.5) if regime == "CAUTIOUS" else None
+            max_str = f"Max invest: ${max_usd:.2f} (CAUTIOUS 50%)" if max_usd else "Volledig investeren (RISK_ON)"
+            send_message(
+                f"{regime_header}\n\n"
+                f"💱 <b>Switch gestart: {current['symbol']} → {target}</b>\n\n"
+                f"<b>Portfolio VOOR:</b>\n{_snapshot_text(snap_before)}\n\n"
+                f"📋 {max_str}"
+            )
+
             result = execute_switch(current["symbol"], target, max_usd=max_usd)
             if result.get("status") == "COMPLETED":
                 ticker = get_ticker(find_usd_pair(target) or "")
@@ -649,13 +712,18 @@ def run_advisor(reports_dir: Path) -> None:
                     source="switch", txids=result.get("buy_txids", []),
                 )
                 save_position(target, entry_price_new, usd_amount, source="pipeline")
+
+                # ── NA-snapshot ──
+                import time as _time; _time.sleep(3)
+                snap_after = _portfolio_snapshot()
                 pnl_str = f" ({pnl_pct:+.1f}%)" if pnl_pct is not None else ""
                 send_message(
                     f"{regime_header}\n\n"
-                    f"💱 <b>Switch uitgevoerd!</b>\n\n"
+                    f"✅ <b>Switch voltooid: {current['symbol']} → {target}</b>\n\n"
                     f"Verkocht: <b>{current['symbol']}</b>{pnl_str}\n"
-                    f"Gekocht: <b>{target}</b> @ ${entry_price_new:.4f}\n"
-                    f"Bedrag: ${usd_amount:.2f}"
+                    f"Gekocht: <b>{target}</b> @ ${entry_price_new:.4f}\n\n"
+                    f"<b>Portfolio NA:</b>\n{_snapshot_text(snap_after)}\n\n"
+                    f"{_compare_snapshots(snap_before, snap_after)}"
                 )
             else:
                 send_message(f"❌ Switch mislukt: {result.get('error', '?')}")
@@ -731,6 +799,16 @@ def run_advisor(reports_dir: Path) -> None:
                 send_message(f"❌ Geen USD pair voor {target}")
                 return
 
+            # ── VOOR-snapshot ──
+            snap_before = _portfolio_snapshot()
+            cautious_str = f" (CAUTIOUS: 50% van ${snap_before['usd']:.2f})" if regime == "CAUTIOUS" else ""
+            send_message(
+                f"{regime_header}\n\n"
+                f"🟢 <b>Aankoop gestart: {target}</b>\n\n"
+                f"<b>Portfolio VOOR:</b>\n{_snapshot_text(snap_before)}\n\n"
+                f"📋 Inzet: ${usd:.2f}{cautious_str}"
+            )
+
             from src.kraken import place_market_order
             order_error = None
             result_order = {}
@@ -766,16 +844,22 @@ def run_advisor(reports_dir: Path) -> None:
                 try:
                     from src.kraken import place_stop_loss_order
                     place_stop_loss_order(pair, actual_amount, sl_price)
-                    sl_note = f"\n🛑 Stop-loss geplaatst op Kraken: ${sl_price:.4f} (-15%)"
+                    sl_note = f"\n🛑 Stop-loss geplaatst: ${sl_price:.4f} (-15%)"
                 except Exception as e:
                     sl_note = f"\n⚠️ Stop-loss plaatsen mislukt: {e}"
 
+                # ── NA-snapshot ──
+                import time as _time; _time.sleep(3)
+                snap_after = _portfolio_snapshot()
                 dip_note = "\n📉 Bron: Dip Finder" if action.get("best_dip") and target == action.get("dip_target") else ""
                 warn = f"\n⚠️ Order response: {order_error}" if order_error else ""
                 send_message(
                     f"{regime_header}\n\n"
-                    f"🟢 <b>Aankoop bevestigd op Kraken!</b>\n\n"
-                    f"✅ Gekocht: <b>{target}</b> @ ${entry_price:.4f}\n"
+                    f"✅ <b>Aankoop bevestigd op Kraken!</b>\n\n"
+                    f"Gekocht: <b>{target}</b> @ ${entry_price:.4f}{dip_note}{sl_note}{warn}\n\n"
+                    f"<b>Portfolio NA:</b>\n{_snapshot_text(snap_after)}\n\n"
+                    f"{_compare_snapshots(snap_before, snap_after)}\n"
+                    f"TX: {', '.join(result_order.get('txid', []))}"
                     f"Bedrag: ~${actual_usd:.2f}{dip_note}{sl_note}{warn}\n"
                     f"TX: {', '.join(result_order.get('txid', []))}"
                 )
