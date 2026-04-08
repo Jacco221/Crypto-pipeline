@@ -71,6 +71,8 @@ def _asset_to_symbol(asset: str) -> str:
 def get_all_positions() -> list:
     """
     Geeft alle niet-stablecoin posities op Kraken (voor multi-coin portfolio).
+    Inclusief coins zonder USD pair (est_usd=0, unknown_pair=True) zodat
+    het systeem ze niet stilzwijgend negeert.
     """
     balances = get_balance()
     positions = []
@@ -82,21 +84,29 @@ def get_all_positions() -> list:
         symbol = _asset_to_symbol(asset)
 
         pair = find_usd_pair(symbol)
-        if not pair:
-            continue
+        est_usd = 0.0
+        unknown_pair = False
 
-        try:
-            ticker = get_ticker(pair)
-            est_usd = amount * ticker.get("last", 0)
-        except Exception:
-            est_usd = 0
+        if pair:
+            try:
+                ticker = get_ticker(pair)
+                est_usd = amount * ticker.get("last", 0)
+            except Exception:
+                est_usd = 0
+        else:
+            # Geen USD pair gevonden — probeer CoinGecko schatting (fallback)
+            # Markeer als unknown zodat de advisor een alert kan sturen
+            unknown_pair = True
+            print(f"[Advisor] ⚠️ Geen USD pair voor {asset} ({symbol}) — positie gemarkeerd als unknown")
 
-        if est_usd >= DUST_THRESHOLD_USD:
+        # Voeg toe als > dust (of als unknown — dan willen we het zeker weten)
+        if est_usd >= DUST_THRESHOLD_USD or (unknown_pair and amount > 0.001):
             positions.append({
                 "symbol": symbol,
                 "asset_key": asset,
                 "amount": amount,
                 "est_usd": round(est_usd, 2),
+                "unknown_pair": unknown_pair,
             })
 
     positions.sort(key=lambda x: x["est_usd"], reverse=True)
@@ -453,6 +463,21 @@ def run_advisor(reports_dir: Path) -> None:
     3. Stuur bevestiging naar Telegram
     """
     print("[Advisor] Analyseer situatie...")
+
+    # Controleer eerst of er onbekende posities zijn (geen USD pair)
+    # Dit zijn coins die het systeem niet automatisch kan verkopen — stuur direct alert
+    all_pos = get_all_positions()
+    unknown = [p for p in all_pos if p.get("unknown_pair")]
+    if unknown:
+        names = ", ".join(p["symbol"] for p in unknown)
+        send_message(
+            f"⚠️ <b>Onbekende positie(s) gedetecteerd</b>\n\n"
+            f"Coins zonder USD pair: <b>{names}</b>\n"
+            f"Het systeem kan deze niet automatisch verkopen.\n\n"
+            f"👉 Verkoop handmatig via Kraken en trigger daarna 'Correctie Allocatie'."
+        )
+        print(f"[Advisor] ⚠️ Onbekende posities: {names}")
+
     action = determine_action(reports_dir)
 
     print(f"[Advisor] Regime: {action['regime']}")
