@@ -49,7 +49,8 @@ ticker_current = get_ticker(find_usd_pair(current_sym) or "")
 current_usd = current_amount * ticker_current.get("last", 0)
 total_portfolio = usd_balance + current_usd
 max_usd = total_portfolio * 0.5 if regime == "CAUTIOUS" else None
-print(f"Regime: {regime} | Portfolio: ${total_portfolio:.2f} | Max invest: ${max_usd:.2f if max_usd else total_portfolio:.2f}")
+max_invest = max_usd if max_usd else total_portfolio
+print(f"Regime: {regime} | Portfolio: ${total_portfolio:.2f} | Max invest: ${max_invest:.2f}")
 
 # Voer switch uit
 print(f"Switch {current_sym} → {TARGET}...")
