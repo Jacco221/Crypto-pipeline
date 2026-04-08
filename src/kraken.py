@@ -222,46 +222,63 @@ def place_market_order(pair: str, side: str, volume: float) -> Dict[str, Any]:
     return result
 
 
-def verify_position(symbol: str, min_usd: float = 5.0) -> dict:
+def verify_position(symbol: str, min_usd: float = 5.0, retries: int = 3) -> dict:
     """
     Verifieer na een trade of de positie werkelijk op Kraken staat.
     Geeft terug: {confirmed, symbol, amount, est_usd, price}
-    """
-    try:
-        balances = get_balance()
-        # Zoek het asset in balans
-        for asset, amount in balances.items():
-            if amount <= 0:
-                continue
-            # Normaliseer asset naam naar symbol
-            s = asset.replace("X", "").replace("Z", "")
-            if asset == "XXBT":
-                s = "BTC"
-            elif asset == "XETH":
-                s = "ETH"
-            elif asset == "XXDG":
-                s = "DOGE"
-            elif asset == "XXRP":
-                s = "XRP"
 
-            if s.upper() == symbol.upper():
-                pair = find_usd_pair(symbol)
-                price = 0.0
-                est_usd = 0.0
-                if pair:
-                    ticker = get_ticker(pair)
-                    price = ticker.get("last", 0)
-                    est_usd = amount * price
-                if est_usd >= min_usd:
-                    return {
-                        "confirmed": True,
-                        "symbol": symbol,
-                        "amount": amount,
-                        "est_usd": round(est_usd, 2),
-                        "price": price,
-                    }
-    except Exception as e:
-        return {"confirmed": False, "error": str(e)}
+    Retries: wacht tot 3x 3 seconden zodat een net geplaatst order tijd krijgt om te vullen.
+    """
+    KNOWN = {
+        "XXBT": "BTC", "XETH": "ETH", "XXDG": "DOGE",
+        "XXRP": "XRP", "XLTC": "LTC", "XXLM": "XLM",
+        "XZEC": "ZEC", "XXMR": "XMR",
+    }
+
+    def _normalize(asset: str) -> str:
+        """Zet Kraken asset naam om naar coin symbol (veilig — geen blinde X-strip)."""
+        if asset in KNOWN:
+            return KNOWN[asset]
+        # Probeer origineel eerst (bijv. XPL, BANANAS31)
+        if find_usd_pair(asset):
+            return asset
+        # Alleen strip leading X als het resultaat ook een geldig pair heeft
+        if len(asset) > 3 and asset.startswith("X"):
+            stripped = asset[1:]
+            if find_usd_pair(stripped):
+                return stripped
+        return asset
+
+    for attempt in range(retries):
+        try:
+            balances = get_balance()
+            for asset, amount in balances.items():
+                if amount <= 0:
+                    continue
+
+                normalized = _normalize(asset)
+                if normalized.upper() == symbol.upper() or asset.upper() == symbol.upper():
+                    pair = find_usd_pair(symbol)
+                    price = 0.0
+                    est_usd = 0.0
+                    if pair:
+                        ticker = get_ticker(pair)
+                        price = ticker.get("last", 0)
+                        est_usd = amount * price
+                    if est_usd >= min_usd:
+                        return {
+                            "confirmed": True,
+                            "symbol": symbol,
+                            "amount": amount,
+                            "est_usd": round(est_usd, 2),
+                            "price": price,
+                        }
+        except Exception as e:
+            return {"confirmed": False, "error": str(e)}
+
+        if attempt < retries - 1:
+            print(f"[Kraken] verify_position: {symbol} nog niet gevonden, wacht 4s... (poging {attempt+1}/{retries})")
+            time.sleep(4)
 
     return {"confirmed": False, "symbol": symbol, "amount": 0, "est_usd": 0}
 
