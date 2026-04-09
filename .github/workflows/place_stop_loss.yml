@@ -1,0 +1,88 @@
+name: Plaats Stop-Loss
+
+on:
+  workflow_dispatch: {}
+
+env:
+  PYTHONUNBUFFERED: "1"
+  TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+  TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+  KRAKEN_API_KEY: ${{ secrets.KRAKEN_API_KEY }}
+  KRAKEN_API_SECRET: ${{ secrets.KRAKEN_API_SECRET }}
+
+jobs:
+  stop_loss:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Plaats stop-loss op huidige positie
+        run: |
+          python3 - <<'PY'
+          import sys, os
+          sys.path.insert(0, ".")
+          from src.kraken import get_balance, find_usd_pair, get_ticker, place_stop_loss_order, cancel_all_orders
+          from src.notify import send_message
+
+          IGNORE = {"ZUSD", "USD", "ZEUR", "EUR", "USDC", "USDG", "USDT"}
+          KNOWN = {
+              "XXBT": "BTC", "XETH": "ETH", "XXDG": "DOGE",
+              "XXRP": "XRP", "XLTC": "LTC", "XXLM": "XLM",
+          }
+
+          balances = get_balance()
+          found = False
+
+          for asset, amount in balances.items():
+              if asset in IGNORE or amount <= 0:
+                  continue
+              sym = KNOWN.get(asset, asset)
+              pair = find_usd_pair(sym) or find_usd_pair(asset)
+              if not pair:
+                  continue
+              ticker = get_ticker(pair)
+              price = ticker.get("last", 0)
+              est_usd = amount * price
+              if est_usd < 5:
+                  continue
+
+              # Annuleer bestaande stop-loss orders zodat we niet dubbel plaatsen
+              cancel_all_orders()
+              import time; time.sleep(2)
+
+              sl_price = round(price * 0.85, 4)
+              print(f"Positie: {sym} | {amount:.4f} coins | ${price:.4f} | SL: ${sl_price:.4f}")
+
+              try:
+                  result = place_stop_loss_order(pair, amount, sl_price)
+                  send_message(
+                      f"🛑 <b>Stop-loss geplaatst</b>\n\n"
+                      f"Coin: <b>{sym}</b>\n"
+                      f"Huidige prijs: ${price:.4f}\n"
+                      f"Stop-loss: <b>${sl_price:.4f}</b> (-15%)\n"
+                      f"Hoeveelheid: {amount:.4f}\n"
+                      f"Order: {result}"
+                  )
+                  print(f"✅ Stop-loss geplaatst: {result}")
+              except Exception as e:
+                  send_message(f"❌ Stop-loss mislukt voor {sym}: {e}")
+                  print(f"❌ Fout: {e}")
+
+              found = True
+              break
+
+          if not found:
+              send_message("ℹ️ Geen crypto positie gevonden — geen stop-loss nodig.")
+              print("Geen positie gevonden.")
+          PY
