@@ -503,7 +503,14 @@ def determine_action(reports_dir: Path) -> dict:
             result["reason"] = f"Regime is {regime}. Geen duidelijk koopadvies."
     else:
         result["action"] = "HOLD"
-        result["reason"] = f"Regime is {regime}. Geen duidelijke actie."
+        # Geef duidelijkere reden: zit je in een coin, of is er geen data?
+        if current:
+            result["reason"] = (
+                f"Regime is {regime}. Je zit in {current['symbol']} (~${current['est_usd']:.0f}). "
+                f"Geen allocation data beschikbaar (scanner run) — HOLD."
+            )
+        else:
+            result["reason"] = f"Regime is {regime}. Geen positie en geen koopadvies — HOLD."
         if dip_reason:
             result["reason"] += f" (Dip info: {dip_reason})"
 

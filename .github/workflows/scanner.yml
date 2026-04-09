@@ -48,6 +48,9 @@ jobs:
           "
 
       - name: Send Telegram update (altijd 1 bericht per scan)
+        env:
+          KRAKEN_API_KEY: ${{ secrets.KRAKEN_API_KEY }}
+          KRAKEN_API_SECRET: ${{ secrets.KRAKEN_API_SECRET }}
         run: |
           python3 -m src.notify --scan-update --dips --reports-dir data/reports || true
 
