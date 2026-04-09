@@ -66,13 +66,14 @@ jobs:
 
               try:
                   result = place_stop_loss_order(pair, amount, sl_price)
+                  txid = result.get("txid", ["?"])[0] if result.get("txid") else "?"
                   send_message(
                       f"🛑 <b>Stop-loss geplaatst</b>\n\n"
                       f"Coin: <b>{sym}</b>\n"
                       f"Huidige prijs: ${price:.4f}\n"
                       f"Stop-loss: <b>${sl_price:.4f}</b> (-15%)\n"
                       f"Hoeveelheid: {amount:.4f}\n"
-                      f"Order: {result}"
+                      f"Order ID: {txid}"
                   )
                   print(f"✅ Stop-loss geplaatst: {result}")
               except Exception as e:
