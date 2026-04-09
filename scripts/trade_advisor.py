@@ -21,7 +21,7 @@ from pathlib import Path
 # Zorg dat project root in sys.path staat
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from src.kraken import get_balance, find_usd_pair, plan_switch, execute_switch, get_ticker, verify_position
+from src.kraken import get_balance, find_usd_pair, plan_switch, execute_switch, get_ticker, verify_position, update_trailing_stop
 from src.notify import send_message, send_trade_proposal, send_trade_result, check_confirmation
 from src.state import (load_position, save_position, clear_position,
                        load_positions, save_positions, clear_positions,
@@ -543,6 +543,35 @@ def run_advisor(reports_dir: Path) -> None:
             f"👉 Verkoop handmatig via Kraken en trigger daarna 'Correctie Allocatie'."
         )
         print(f"[Advisor] ⚠️ Onbekende posities: {names}")
+
+    # ── TRAILING STOP UPDATE ─────────────────────────────────────────────────
+    # Elke run: controleer of stop-loss omhoog geschoven moet worden.
+    # Werkt via Kraken orders — geen state file nodig.
+    TRAIL_PCT = 0.20  # 20% onder huidige prijs
+    for pos in all_pos:
+        if pos.get("unknown_pair"):
+            continue
+        sym = pos["symbol"]
+        price = pos["est_usd"] / pos["amount"] if pos["amount"] > 0 else 0
+        if price <= 0:
+            continue
+        try:
+            trail = update_trailing_stop(sym, price, trail_pct=TRAIL_PCT)
+            if trail["updated"] and trail["action"] == "updated":
+                old = trail.get("old_stop", 0)
+                new = trail.get("new_stop", 0)
+                print(f"[Advisor] ↑ Trailing stop {sym}: ${old:.4f} → ${new:.4f}")
+                send_message(
+                    f"📈 <b>Trailing stop omhoog: {sym}</b>\n\n"
+                    f"Prijs gestegen → stop bijgewerkt\n"
+                    f"Oud: ${old:.4f} → Nieuw: <b>${new:.4f}</b> (-{TRAIL_PCT*100:.0f}% van ${price:.4f})\n\n"
+                    f"Je winst is nu beter beschermd."
+                )
+            elif trail["updated"] and trail["action"] == "placed":
+                new = trail.get("new_stop", 0)
+                print(f"[Advisor] 🛑 Nieuwe trailing stop {sym}: ${new:.4f}")
+        except Exception as e:
+            print(f"[Advisor] Trailing stop fout voor {sym}: {e}")
 
     action = determine_action(reports_dir)
 

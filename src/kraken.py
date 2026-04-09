@@ -306,6 +306,100 @@ def cancel_all_orders(pair: Optional[str] = None) -> Dict[str, Any]:
     return result
 
 
+def get_open_orders() -> dict:
+    """Haal alle open orders op van Kraken."""
+    return _private_request("OpenOrders")
+
+
+def get_stop_loss_level(symbol: str) -> Optional[float]:
+    """
+    Geef het huidige stop-loss niveau voor een coin.
+    Zoekt in open orders naar een stop-loss sell order voor dit pair.
+    """
+    try:
+        orders = get_open_orders()
+        pair = find_usd_pair(symbol)
+        if not pair:
+            return None
+        for order_id, order in orders.get("open", {}).items():
+            descr = order.get("descr", {})
+            order_pair = descr.get("pair", "").upper().replace("/", "")
+            is_sl = descr.get("type") == "sell" and descr.get("ordertype") == "stop-loss"
+            pair_clean = pair.upper().replace("/", "")
+            if is_sl and (pair_clean in order_pair or order_pair in pair_clean):
+                return float(order.get("stopprice", 0) or 0)
+    except Exception:
+        pass
+    return None
+
+
+def update_trailing_stop(symbol: str, current_price: float,
+                         trail_pct: float = 0.20) -> dict:
+    """
+    Schuif de stop-loss order omhoog als de prijs gestegen is (trailing stop).
+
+    - trail_pct: hoeveel % onder de huidige prijs de stop staat (default: 20%)
+    - Werkt volledig via Kraken orders — geen state file nodig.
+    - Als de nieuwe stop hoger is dan de bestaande: cancel + herplaats.
+    - Als de prijs gedaald is: stop blijft staan (wordt niet verlaagd).
+
+    Returns dict met: action, old_stop, new_stop, updated (bool)
+    """
+    new_stop = round(current_price * (1 - trail_pct), 4)
+    current_stop = get_stop_loss_level(symbol)
+
+    result = {
+        "symbol": symbol,
+        "current_price": current_price,
+        "new_stop": new_stop,
+        "old_stop": current_stop,
+        "updated": False,
+        "action": "none",
+    }
+
+    pair = find_usd_pair(symbol)
+    if not pair:
+        result["action"] = "no_pair"
+        return result
+
+    # Geen stop aanwezig → plaats nieuwe
+    if current_stop is None or current_stop == 0:
+        balances = get_balance()
+        volume = 0.0
+        for asset, amount in balances.items():
+            if symbol.upper() in asset.upper() and amount > 0:
+                volume = amount
+                break
+        if volume > 0:
+            place_stop_loss_order(pair, volume, new_stop)
+            result["action"] = "placed"
+            result["updated"] = True
+        return result
+
+    # Stop is al hoger of gelijk → niet aanpassen (trailing stop gaat nooit omlaag)
+    if new_stop <= current_stop:
+        result["action"] = "no_change"
+        return result
+
+    # Prijs gestegen → stop omhoog schuiven
+    cancel_all_orders()
+    time.sleep(2)
+
+    balances = get_balance()
+    volume = 0.0
+    for asset, amount in balances.items():
+        if symbol.upper() in asset.upper() and amount > 0:
+            volume = amount
+            break
+
+    if volume > 0:
+        place_stop_loss_order(pair, volume, new_stop)
+        result["action"] = "updated"
+        result["updated"] = True
+
+    return result
+
+
 def estimate_trade(pair: str, side: str, volume: float) -> Dict[str, Any]:
     """Schat een trade in zonder uit te voeren (voor bevestiging)."""
     ticker = get_ticker(pair)
