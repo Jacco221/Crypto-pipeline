@@ -338,12 +338,14 @@ def update_trailing_stop(symbol: str, current_price: float,
     """
     Schuif de stop-loss order omhoog als de prijs gestegen is (trailing stop).
 
-    - trail_pct: hoeveel % onder de huidige prijs de stop staat (default: 20%)
-    - Werkt volledig via Kraken orders — geen state file nodig.
-    - Als de nieuwe stop hoger is dan de bestaande: cancel + herplaats.
-    - Als de prijs gedaald is: stop blijft staan (wordt niet verlaagd).
+    Strategie:
+    - Haal huidig stop-loss niveau op via open orders
+    - Bereken nieuw stop = current_price * (1 - trail_pct)
+    - Als nieuw stop HOGER dan huidig: cancel alles + herplaats
+    - Als nieuw stop LAGER of GELIJK: doe niets (stop gaat nooit omlaag)
+    - Als geen stop gevonden: cancel alles + plaats vers (coins kunnen geblokkeerd zijn)
 
-    Returns dict met: action, old_stop, new_stop, updated (bool)
+    Altijd cancel-first om EOrder:Insufficient funds te voorkomen.
     """
     new_stop = round(current_price * (1 - trail_pct), 4)
     current_stop = get_stop_loss_level(symbol)
@@ -362,26 +364,14 @@ def update_trailing_stop(symbol: str, current_price: float,
         result["action"] = "no_pair"
         return result
 
-    # Geen stop aanwezig → plaats nieuwe
-    if current_stop is None or current_stop == 0:
-        balances = get_balance()
-        volume = 0.0
-        for asset, amount in balances.items():
-            if symbol.upper() in asset.upper() and amount > 0:
-                volume = amount
-                break
-        if volume > 0:
-            place_stop_loss_order(pair, volume, new_stop)
-            result["action"] = "placed"
-            result["updated"] = True
-        return result
-
-    # Stop is al hoger of gelijk → niet aanpassen (trailing stop gaat nooit omlaag)
-    if new_stop <= current_stop:
+    # Als stop gevonden én al hoger of gelijk → niet aanpassen
+    if current_stop and new_stop <= current_stop:
         result["action"] = "no_change"
         return result
 
-    # Prijs gestegen → stop omhoog schuiven
+    # Stop ontbreekt of prijs gestegen → cancel alles + herplaats
+    # (cancel-first voorkomt EOrder:Insufficient funds)
+    action = "updated" if current_stop else "placed"
     cancel_all_orders()
     time.sleep(2)
 
@@ -394,7 +384,7 @@ def update_trailing_stop(symbol: str, current_price: float,
 
     if volume > 0:
         place_stop_loss_order(pair, volume, new_stop)
-        result["action"] = "updated"
+        result["action"] = action
         result["updated"] = True
 
     return result
