@@ -46,8 +46,9 @@ def _asset_to_symbol(asset: str) -> str:
     Valideert via find_usd_pair() zodat ook onbekende X/Z-coins correct werken.
     """
     # Bekende Kraken-specifieke namen eerst
+    # BTC → XBT want Kraken gebruikt XBT/USD (niet BTC/USD)
     known = {
-        "XXBT": "BTC", "XETH": "ETH", "XXDG": "DOGE",
+        "XXBT": "XBT", "XETH": "ETH", "XXDG": "DOGE",
         "XXRP": "XRP", "XLTC": "LTC", "XXLM": "XLM",
         "XZEC": "ZEC", "XXMR": "XMR",
     }
@@ -436,7 +437,23 @@ def determine_action(reports_dir: Path) -> dict:
                 best_target = dip_target
                 best_reason = dip_reason
 
+        # positions.json is altijd leeg in GitHub Actions (gitignored).
+        # Als we een echte Kraken positie hebben, doe altijd score-vergelijking
+        # en nooit "geen positie — vrij om in te stappen" gebruiken als reden.
         switch = should_switch(current_score, target_score)
+
+        # Override: als should_switch zei "geen positie" maar we hebben WEL een
+        # Kraken positie, behandel het als een normale score-check zonder cooldown
+        if switch.get("reason", "").startswith("Geen huidige positie") and current:
+            min_advantage = 5.0  # minstens 5% beter voordat we switchen
+            advantage = 0.0
+            if current_score > 0:
+                advantage = ((target_score - current_score) / current_score) * 100
+            if advantage >= min_advantage:
+                switch = {"switch": True, "reason": f"Score voordeel {advantage:.1f}% (>= {min_advantage}%)"}
+            else:
+                switch = {"switch": False, "reason": f"Score voordeel {advantage:.1f}% — te klein om te switchen (min {min_advantage}%)"}
+
         result["switch_analysis"] = switch
 
         if switch["switch"]:
