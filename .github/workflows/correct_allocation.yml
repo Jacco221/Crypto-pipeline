@@ -1,7 +1,12 @@
 name: Correctie Allocatie
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'Target coin (bijv. CFG, XPL, RAVE)'
+        required: false
+        default: 'XPL'
 
 env:
   PYTHONUNBUFFERED: "1"
@@ -27,6 +32,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Switch terug naar top coin (XPL)
+      - name: Switch naar target coin (${{ github.event.inputs.target }})
         run: |
-          python3 scripts/switch_to_top_coin.py
+          TARGET_COIN="${{ github.event.inputs.target }}" python3 scripts/switch_to_top_coin.py

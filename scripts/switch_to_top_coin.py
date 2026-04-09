@@ -11,7 +11,7 @@ from src.kraken import get_balance, find_usd_pair, get_ticker, execute_switch, v
 from src.notify import send_message
 from src.state import save_positions, clear_positions
 
-TARGET = "XPL"
+TARGET = os.environ.get("TARGET_COIN", "XPL")
 
 # Huidige positie bepalen
 balances = get_balance()
