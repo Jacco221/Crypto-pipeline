@@ -109,13 +109,13 @@ if verif["confirmed"]:
         "source": "manual_correction",
     }])
 
-    sl_price = round(entry_price * 0.85, 4)
+    TRAIL_PCT = 0.20  # 20% native trailing stop
     try:
-        from src.kraken import place_stop_loss_order
-        place_stop_loss_order(find_usd_pair(TARGET), actual_amount, sl_price)
-        sl_note = f"\n🛑 Stop-loss: ${sl_price:.4f} (-15%)"
+        from src.kraken import place_native_trailing_stop
+        place_native_trailing_stop(find_usd_pair(TARGET), actual_amount, trail_pct=TRAIL_PCT)
+        sl_note = f"\n🛑 Native trailing stop: -{TRAIL_PCT*100:.0f}% (Kraken real-time)"
     except Exception as e:
-        sl_note = f"\n⚠️ Stop-loss mislukt: {e}"
+        sl_note = f"\n⚠️ Trailing stop mislukt: {e}"
 
     from_str = f"Verkocht: <b>{current_sym}</b>\n" if current_sym else ""
     send_message(

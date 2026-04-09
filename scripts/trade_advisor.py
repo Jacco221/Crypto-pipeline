@@ -21,7 +21,7 @@ from pathlib import Path
 # Zorg dat project root in sys.path staat
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from src.kraken import get_balance, find_usd_pair, plan_switch, execute_switch, get_ticker, verify_position, update_trailing_stop
+from src.kraken import get_balance, find_usd_pair, plan_switch, execute_switch, get_ticker, verify_position, update_trailing_stop, place_native_trailing_stop
 from src.notify import send_message, send_trade_proposal, send_trade_result, check_confirmation
 from src.state import (load_position, save_position, clear_position,
                        load_positions, save_positions, clear_positions,
@@ -544,10 +544,11 @@ def run_advisor(reports_dir: Path) -> None:
         )
         print(f"[Advisor] ⚠️ Onbekende posities: {names}")
 
-    # ── TRAILING STOP UPDATE ─────────────────────────────────────────────────
-    # Elke run: controleer of stop-loss omhoog geschoven moet worden.
-    # Werkt via Kraken orders — geen state file nodig.
-    TRAIL_PCT = 0.20  # 20% onder huidige prijs
+    # ── NATIVE TRAILING STOP CHECK ────────────────────────────────────────────
+    # Controleer of er een native trailing-stop op Kraken staat voor elke positie.
+    # Als er geen is (bijv. na herstart of handmatige trade), place er een.
+    # Als er al een staat: niets doen — Kraken volgt de prijs real-time zelf.
+    TRAIL_PCT = 0.20  # 20% trailing offset
     for pos in all_pos:
         if pos.get("unknown_pair"):
             continue
@@ -557,19 +558,16 @@ def run_advisor(reports_dir: Path) -> None:
             continue
         try:
             trail = update_trailing_stop(sym, price, trail_pct=TRAIL_PCT)
-            if trail["updated"] and trail["action"] == "updated":
-                old = trail.get("old_stop", 0)
-                new = trail.get("new_stop", 0)
-                print(f"[Advisor] ↑ Trailing stop {sym}: ${old:.4f} → ${new:.4f}")
+            if trail["action"] == "placed":
+                print(f"[Advisor] 🛑 Native trailing stop geplaatst voor {sym} (-{TRAIL_PCT*100:.0f}%)")
                 send_message(
-                    f"📈 <b>Trailing stop omhoog: {sym}</b>\n\n"
-                    f"Prijs gestegen → stop bijgewerkt\n"
-                    f"Oud: ${old:.4f} → Nieuw: <b>${new:.4f}</b> (-{TRAIL_PCT*100:.0f}% van ${price:.4f})\n\n"
-                    f"Je winst is nu beter beschermd."
+                    f"🛑 <b>Native trailing stop geplaatst: {sym}</b>\n\n"
+                    f"Kraken volgt de prijs nu real-time.\n"
+                    f"Stop activeert bij -{TRAIL_PCT*100:.0f}% daling van de piek.\n\n"
+                    f"✅ Je positie is beschermd — ook tussen pipeline runs."
                 )
-            elif trail["updated"] and trail["action"] == "placed":
-                new = trail.get("new_stop", 0)
-                print(f"[Advisor] 🛑 Nieuwe trailing stop {sym}: ${new:.4f}")
+            elif trail["action"] == "no_change":
+                print(f"[Advisor] ✓ Native trailing stop actief voor {sym} (Kraken beheert real-time)")
         except Exception as e:
             print(f"[Advisor] Trailing stop fout voor {sym}: {e}")
 
@@ -891,15 +889,13 @@ def run_advisor(reports_dir: Path) -> None:
                     txids=result_order.get("txid", []),
                 )
 
-                # Plaats stop-loss order op Kraken (-15% van entry)
-                sl_price = round(entry_price * 0.85, 4)
+                # Plaats native trailing-stop op Kraken (-20% trailing, real-time)
                 sl_note = ""
                 try:
-                    from src.kraken import place_stop_loss_order
-                    place_stop_loss_order(pair, actual_amount, sl_price)
-                    sl_note = f"\n🛑 Stop-loss geplaatst: ${sl_price:.4f} (-15%)"
+                    place_native_trailing_stop(pair, actual_amount, trail_pct=TRAIL_PCT)
+                    sl_note = f"\n🛑 Native trailing stop: -{TRAIL_PCT*100:.0f}% (Kraken real-time)"
                 except Exception as e:
-                    sl_note = f"\n⚠️ Stop-loss plaatsen mislukt: {e}"
+                    sl_note = f"\n⚠️ Trailing stop plaatsen mislukt: {e}"
 
                 # ── NA-snapshot ──
                 import time as _time; _time.sleep(3)

@@ -333,28 +333,70 @@ def get_stop_loss_level(symbol: str) -> Optional[float]:
     return None
 
 
+def get_trailing_stop_order(symbol: str) -> Optional[dict]:
+    """
+    Controleer of er al een native trailing-stop order open staat voor dit symbool.
+    Retourneert order-info dict als gevonden, anders None.
+    """
+    try:
+        orders = get_open_orders()
+        pair = find_usd_pair(symbol)
+        if not pair:
+            return None
+        pair_clean = pair.upper().replace("/", "")
+        for order_id, order in orders.get("open", {}).items():
+            descr = order.get("descr", {})
+            order_pair = descr.get("pair", "").upper().replace("/", "")
+            is_ts = descr.get("type") == "sell" and descr.get("ordertype") == "trailing-stop"
+            if is_ts and (pair_clean in order_pair or order_pair in pair_clean):
+                return {
+                    "order_id": order_id,
+                    "stopprice": float(order.get("stopprice", 0) or 0),
+                    "misc": order.get("misc", ""),
+                }
+    except Exception:
+        pass
+    return None
+
+
+def place_native_trailing_stop(pair: str, volume: float, trail_pct: float = 0.20) -> Dict[str, Any]:
+    """
+    Plaats een NATIVE Kraken trailing-stop order.
+
+    Kraken volgt de prijs real-time — stop schuift automatisch omhoog
+    zonder dat de pipeline hoeft te draaien.
+
+    trail_pct: trailing offset als fractie (0.20 = 20% onder de peak)
+    Kraken accepteert percentage via '-X%' syntax in het price-veld.
+    """
+    trail_str = f"-{trail_pct * 100:.1f}%"  # bijv. "-20.0%" voor 20% trailing
+    data = {
+        "pair": pair,
+        "type": "sell",
+        "ordertype": "trailing-stop",
+        "price": trail_str,
+        "volume": str(volume),
+    }
+    result = _private_request("AddOrder", data)
+    return result
+
+
 def update_trailing_stop(symbol: str, current_price: float,
                          trail_pct: float = 0.20) -> dict:
     """
-    Schuif de stop-loss order omhoog als de prijs gestegen is (trailing stop).
+    Zorg dat er een native trailing-stop order actief is voor dit symbool.
 
     Strategie:
-    - Haal huidig stop-loss niveau op via open orders
-    - Bereken nieuw stop = current_price * (1 - trail_pct)
-    - Als nieuw stop HOGER dan huidig: cancel alles + herplaats
-    - Als nieuw stop LAGER of GELIJK: doe niets (stop gaat nooit omlaag)
-    - Als geen stop gevonden: cancel alles + plaats vers (coins kunnen geblokkeerd zijn)
+    - Al een native trailing-stop open → niets doen (Kraken beheert het real-time)
+    - Nog geen trailing-stop → cancel alles (verwijder oude stop-loss) + plaats native
 
-    Altijd cancel-first om EOrder:Insufficient funds te voorkomen.
+    Native trailing-stop schuift automatisch mee met de prijs op Kraken
+    zonder dat de pipeline tussenbeide hoeft te komen.
     """
-    new_stop = round(current_price * (1 - trail_pct), 4)
-    current_stop = get_stop_loss_level(symbol)
-
     result = {
         "symbol": symbol,
         "current_price": current_price,
-        "new_stop": new_stop,
-        "old_stop": current_stop,
+        "trail_pct": trail_pct,
         "updated": False,
         "action": "none",
     }
@@ -364,14 +406,15 @@ def update_trailing_stop(symbol: str, current_price: float,
         result["action"] = "no_pair"
         return result
 
-    # Als stop gevonden én al hoger of gelijk → niet aanpassen
-    if current_stop and new_stop <= current_stop:
+    # Als er al een native trailing-stop staat → niets te doen
+    existing = get_trailing_stop_order(symbol)
+    if existing is not None:
         result["action"] = "no_change"
+        result["existing_stop"] = existing.get("stopprice", 0)
         return result
 
-    # Stop ontbreekt of prijs gestegen → cancel alles + herplaats
-    # (cancel-first voorkomt EOrder:Insufficient funds)
-    action = "updated" if current_stop else "placed"
+    # Geen trailing-stop gevonden → cancel alles + plaats native trailing-stop
+    # (cancel-first voorkomt EOrder:Insufficient funds door eventuele oude stop-loss)
     cancel_all_orders()
     time.sleep(2)
 
@@ -383,8 +426,8 @@ def update_trailing_stop(symbol: str, current_price: float,
             break
 
     if volume > 0:
-        place_stop_loss_order(pair, volume, new_stop)
-        result["action"] = action
+        place_native_trailing_stop(pair, volume, trail_pct)
+        result["action"] = "placed"
         result["updated"] = True
 
     return result
