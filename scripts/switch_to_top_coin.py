@@ -43,8 +43,57 @@ usd_balance = balances.get("ZUSD", balances.get("USD", 0))
 
 # ── GEVAL 1: Al in target coin ──────────────────────────────────────────────
 if current_sym and current_sym.upper() == TARGET.upper():
-    send_message(f"✅ Al in {TARGET} ({current_amount:.0f} coins ~${est_usd:.2f}) — geen switch nodig.")
-    print(f"Al in {TARGET}, geen actie.")
+    # Check of er ook USD beschikbaar is om bij te kopen
+    if usd_balance >= 5:
+        total_portfolio = est_usd + usd_balance
+        target_crypto_usd = total_portfolio * 0.5 if regime == "CAUTIOUS" else total_portfolio
+        extra_needed = target_crypto_usd - est_usd
+        print(f"Al in {TARGET} (~${est_usd:.2f}) + USD ${usd_balance:.2f} beschikbaar")
+        print(f"Regime: {regime} | Totaal: ${total_portfolio:.2f} | Doel in {TARGET}: ${target_crypto_usd:.2f}")
+        print(f"Bijkoop nodig: ${extra_needed:.2f}")
+        if extra_needed >= 5:
+            invest_usd = min(extra_needed, usd_balance)
+            pair = find_usd_pair(TARGET)
+            from src.kraken import place_market_order, cancel_all_orders, place_native_trailing_stop
+            import time
+            send_message(
+                f"🟢 <b>Bijkoop {TARGET} gestart</b>\n\n"
+                f"Al in {TARGET}: ~${est_usd:.2f}\n"
+                f"USD beschikbaar: ${usd_balance:.2f}\n"
+                f"Totaal portfolio: ${total_portfolio:.2f}\n"
+                f"Doel (50%): ${target_crypto_usd:.2f}\n"
+                f"📋 Bijkoop: ${invest_usd:.2f}"
+            )
+            # Cancel trailing stop zodat we hem daarna herplaatsen op het nieuwe volume
+            try:
+                cancel_all_orders()
+                time.sleep(2)
+            except Exception as e:
+                print(f"Cancel waarschuwing: {e}")
+            place_market_order(pair, "buy", invest_usd)
+            time.sleep(3)
+            # Verificeer en herplaats trailing stop op totale positie
+            verif = verify_position(TARGET)
+            if verif["confirmed"]:
+                TRAIL_PCT = 0.20
+                try:
+                    place_native_trailing_stop(pair, verif["amount"], trail_pct=TRAIL_PCT)
+                    sl_note = f"\n🛑 Trailing stop herplaatst op totale positie (-{TRAIL_PCT*100:.0f}%)"
+                except Exception as e:
+                    sl_note = f"\n⚠️ Trailing stop mislukt: {e}"
+                send_message(
+                    f"✅ <b>Bijkoop {TARGET} bevestigd</b>\n\n"
+                    f"Gekocht: ${invest_usd:.2f} extra\n"
+                    f"Totale positie: {verif['amount']:.2f} {TARGET} (~${verif['est_usd']:.2f})\n"
+                    f"@ ${verif['price']:.4f}{sl_note}"
+                )
+            else:
+                send_message(f"⚠️ Bijkoop geplaatst maar verificatie mislukt — check Kraken.")
+        else:
+            send_message(f"✅ Al in {TARGET} (~${est_usd:.2f}) — 50% doel al bereikt, geen bijkoop nodig.")
+    else:
+        send_message(f"✅ Al in {TARGET} ({current_amount:.0f} coins ~${est_usd:.2f}) — geen switch nodig.")
+    print(f"Al in {TARGET}, klaar.")
     sys.exit(0)
 
 # ── GEVAL 2: In een andere coin → switch ────────────────────────────────────
