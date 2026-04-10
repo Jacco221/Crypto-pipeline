@@ -359,7 +359,8 @@ def get_trailing_stop_order(symbol: str) -> Optional[dict]:
     return None
 
 
-def place_native_trailing_stop(pair: str, volume: float, trail_pct: float = 0.20) -> Dict[str, Any]:
+def place_native_trailing_stop(pair: str, volume: float, trail_pct: float = 0.20,
+                               current_price: Optional[float] = None) -> Dict[str, Any]:
     """
     Plaats een NATIVE Kraken trailing-stop order.
 
@@ -367,14 +368,22 @@ def place_native_trailing_stop(pair: str, volume: float, trail_pct: float = 0.20
     zonder dat de pipeline hoeft te draaien.
 
     trail_pct: trailing offset als fractie (0.20 = 20% onder de peak)
-    Kraken accepteert percentage via '-X%' syntax in het price-veld.
+    current_price: huidige prijs (voor berekening absoluut trail bedrag).
+                   Als niet opgegeven wordt de prijs live opgehaald.
+
+    Kraken verwacht een absoluut prijsbedrag, geen percentage.
     """
-    trail_str = f"-{trail_pct * 100:.1f}%"  # bijv. "-20.0%" voor 20% trailing
+    if current_price is None:
+        ticker = get_ticker(pair)
+        current_price = ticker.get("last", 0)
+
+    trail_amount = round(current_price * trail_pct, 6)
+
     data = {
         "pair": pair,
         "type": "sell",
         "ordertype": "trailing-stop",
-        "price": trail_str,
+        "price": str(trail_amount),  # absoluut bedrag, bijv. "0.046300"
         "volume": str(volume),
     }
     result = _private_request("AddOrder", data)

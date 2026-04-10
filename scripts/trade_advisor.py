@@ -892,7 +892,7 @@ def run_advisor(reports_dir: Path) -> None:
                 # Plaats native trailing-stop op Kraken (-20% trailing, real-time)
                 sl_note = ""
                 try:
-                    place_native_trailing_stop(pair, actual_amount, trail_pct=TRAIL_PCT)
+                    place_native_trailing_stop(pair, actual_amount, trail_pct=TRAIL_PCT, current_price=entry_price)
                     sl_note = f"\n🛑 Native trailing stop: -{TRAIL_PCT*100:.0f}% (Kraken real-time)"
                 except Exception as e:
                     sl_note = f"\n⚠️ Trailing stop plaatsen mislukt: {e}"

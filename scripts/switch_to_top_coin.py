@@ -77,7 +77,7 @@ if current_sym and current_sym.upper() == TARGET.upper():
             if verif["confirmed"]:
                 TRAIL_PCT = 0.20
                 try:
-                    place_native_trailing_stop(pair, verif["amount"], trail_pct=TRAIL_PCT)
+                    place_native_trailing_stop(pair, verif["amount"], trail_pct=TRAIL_PCT, current_price=verif["price"])
                     sl_note = f"\n🛑 Trailing stop herplaatst op totale positie (-{TRAIL_PCT*100:.0f}%)"
                 except Exception as e:
                     sl_note = f"\n⚠️ Trailing stop mislukt: {e}"
@@ -161,7 +161,7 @@ if verif["confirmed"]:
     TRAIL_PCT = 0.20  # 20% native trailing stop
     try:
         from src.kraken import place_native_trailing_stop
-        place_native_trailing_stop(find_usd_pair(TARGET), actual_amount, trail_pct=TRAIL_PCT)
+        place_native_trailing_stop(find_usd_pair(TARGET), actual_amount, trail_pct=TRAIL_PCT, current_price=entry_price)
         sl_note = f"\n🛑 Native trailing stop: -{TRAIL_PCT*100:.0f}% (Kraken real-time)"
     except Exception as e:
         sl_note = f"\n⚠️ Trailing stop mislukt: {e}"
