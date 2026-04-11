@@ -764,6 +764,22 @@ def run_advisor(reports_dir: Path) -> None:
                 )
                 save_position(target, entry_price_new, usd_amount, source="pipeline")
 
+                # ── Plaats native trailing stop op nieuwe positie ──
+                target_pair = find_usd_pair(target)
+                sl_note = ""
+                if target_pair and entry_price_new > 0:
+                    try:
+                        verif = verify_position(target)
+                        if verif["confirmed"]:
+                            place_native_trailing_stop(target_pair, verif["amount"],
+                                                       trail_pct=TRAIL_PCT,
+                                                       current_price=entry_price_new)
+                            sl_note = f"\n🛑 Native trailing stop: -{TRAIL_PCT*100:.0f}% (Kraken real-time)"
+                        else:
+                            sl_note = "\n⚠️ Trailing stop overgeslagen — positie niet geverifieerd"
+                    except Exception as e:
+                        sl_note = f"\n⚠️ Trailing stop mislukt: {e}"
+
                 # ── NA-snapshot ──
                 import time as _time; _time.sleep(3)
                 snap_after = _portfolio_snapshot()
@@ -772,7 +788,7 @@ def run_advisor(reports_dir: Path) -> None:
                     f"{regime_header}\n\n"
                     f"✅ <b>Switch voltooid: {current['symbol']} → {target}</b>\n\n"
                     f"Verkocht: <b>{current['symbol']}</b>{pnl_str}\n"
-                    f"Gekocht: <b>{target}</b> @ ${entry_price_new:.4f}\n\n"
+                    f"Gekocht: <b>{target}</b> @ ${entry_price_new:.4f}{sl_note}\n\n"
                     f"<b>Portfolio NA:</b>\n{_snapshot_text(snap_after)}\n\n"
                     f"{_compare_snapshots(snap_before, snap_after)}"
                 )
