@@ -362,31 +362,64 @@ def get_trailing_stop_order(symbol: str) -> Optional[dict]:
 def place_native_trailing_stop(pair: str, volume: float, trail_pct: float = 0.20,
                                current_price: Optional[float] = None) -> Dict[str, Any]:
     """
-    Plaats een NATIVE Kraken trailing-stop order.
+    Plaats een NATIVE Kraken trailing-stop order met fallback naar stop-loss.
 
-    Kraken volgt de prijs real-time — stop schuift automatisch omhoog
-    zonder dat de pipeline hoeft te draaien.
+    Probeert achtereenvolgens:
+    1. trailing-stop met negatief absoluut bedrag (bijv. "-0.4213")
+    2. trailing-stop met positief absoluut bedrag (bijv. "0.4213")
+    3. Fallback: gewone stop-loss op -trail_pct van huidige prijs
 
     trail_pct: trailing offset als fractie (0.20 = 20% onder de peak)
-    current_price: huidige prijs (voor berekening absoluut trail bedrag).
-                   Als niet opgegeven wordt de prijs live opgehaald.
-
-    Kraken verwacht een absoluut prijsbedrag, geen percentage.
+    current_price: huidige prijs — wordt live opgehaald als niet opgegeven
     """
     if current_price is None:
         ticker = get_ticker(pair)
         current_price = ticker.get("last", 0)
 
     trail_amount = round(current_price * trail_pct, 6)
+    stop_price = round(current_price * (1 - trail_pct), 6)
 
+    # Poging 1: negatief trail bedrag (Kraken sell trailing-stop conventie)
+    try:
+        data = {
+            "pair": pair,
+            "type": "sell",
+            "ordertype": "trailing-stop",
+            "price": f"-{trail_amount}",
+            "volume": str(volume),
+        }
+        result = _private_request("AddOrder", data)
+        result["method"] = "trailing-stop-negative"
+        return result
+    except Exception as e1:
+        print(f"[Kraken] trailing-stop negatief mislukt: {e1}")
+
+    # Poging 2: positief trail bedrag
+    try:
+        data = {
+            "pair": pair,
+            "type": "sell",
+            "ordertype": "trailing-stop",
+            "price": str(trail_amount),
+            "volume": str(volume),
+        }
+        result = _private_request("AddOrder", data)
+        result["method"] = "trailing-stop-positive"
+        return result
+    except Exception as e2:
+        print(f"[Kraken] trailing-stop positief mislukt: {e2}")
+
+    # Poging 3: fallback naar gewone stop-loss
+    print(f"[Kraken] Fallback naar stop-loss @ {stop_price} (-{trail_pct*100:.0f}%)")
     data = {
         "pair": pair,
         "type": "sell",
-        "ordertype": "trailing-stop",
-        "price": str(trail_amount),  # absoluut bedrag, bijv. "0.046300"
+        "ordertype": "stop-loss",
+        "price": str(stop_price),
         "volume": str(volume),
     }
     result = _private_request("AddOrder", data)
+    result["method"] = "stop-loss-fallback"
     return result
 
 
