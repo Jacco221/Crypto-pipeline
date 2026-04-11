@@ -449,14 +449,20 @@ def update_trailing_stop(symbol: str, current_price: float,
         return result
 
     # Als er al een native trailing-stop staat → niets te doen
-    existing = get_trailing_stop_order(symbol)
-    if existing is not None:
+    existing_ts = get_trailing_stop_order(symbol)
+    if existing_ts is not None:
         result["action"] = "no_change"
-        result["existing_stop"] = existing.get("stopprice", 0)
+        result["existing_stop"] = existing_ts.get("stopprice", 0)
         return result
 
-    # Geen trailing-stop gevonden → cancel alles + plaats native trailing-stop
-    # (cancel-first voorkomt EOrder:Insufficient funds door eventuele oude stop-loss)
+    # Als er een gewone stop-loss staat → ook goed, niet cancelen
+    existing_sl = get_stop_loss_level(symbol)
+    if existing_sl is not None:
+        result["action"] = "no_change"
+        result["existing_stop"] = existing_sl
+        return result
+
+    # Geen enkele bescherming → cancel alles + plaats nieuwe stop
     cancel_all_orders()
     time.sleep(2)
 
