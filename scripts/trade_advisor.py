@@ -457,11 +457,24 @@ def determine_action(reports_dir: Path) -> dict:
         result["switch_analysis"] = switch
 
         if switch["switch"]:
+            # Token unlock check vóór switch
+            from src.token_unlocks import check_upcoming_unlocks, unlock_check_text
+            unlock = check_upcoming_unlocks(best_target)
+            if unlock["risk"] == "BLOCK":
+                result["action"] = "HOLD"
+                result["reason"] = (
+                    f"Regime is {regime}. Switch naar {best_target} geblokkeerd. "
+                    f"{unlock['reason']}"
+                )
+                return result
+            unlock_note = f" {unlock_check_text(unlock)}" if unlock["risk"] in ("WARNING", "UNKNOWN") else ""
+
             result["action"] = "SWITCH"
             result["target"] = best_target
+            result["unlock_check"] = unlock
             result["reason"] = (
                 f"Regime is {regime}. {switch['reason']} "
-                f"{best_reason}. Switch {current['symbol']} → {best_target}."
+                f"{best_reason}. Switch {current['symbol']} → {best_target}.{unlock_note}"
             )
         else:
             result["action"] = "HOLD"
@@ -490,13 +503,26 @@ def determine_action(reports_dir: Path) -> dict:
                 buy_reason = dip_reason
 
         if buy_target:
+            # Token unlock check vóór aankoop
+            from src.token_unlocks import check_upcoming_unlocks, unlock_check_text
+            unlock = check_upcoming_unlocks(buy_target)
+            if unlock["risk"] == "BLOCK":
+                result["action"] = "HOLD"
+                result["reason"] = (
+                    f"Regime is {regime}. Aankoop {buy_target} geblokkeerd. "
+                    f"{unlock['reason']}"
+                )
+                return result
+            unlock_note = f" {unlock_check_text(unlock)}" if unlock["risk"] in ("WARNING", "UNKNOWN") else ""
+
             result["action"] = "BUY"
             result["target"] = buy_target
             result["invest_usd"] = invest_usd
+            result["unlock_check"] = unlock
             result["reason"] = (
                 f"Regime is {regime}. Inzet: ${invest_usd:.2f} "
                 f"({'50% van ' + str(round(usd_balance)) + ' — cautious' if regime == 'CAUTIOUS' else 'volledig'})."
-                f" {buy_reason}"
+                f" {buy_reason}{unlock_note}"
             )
         else:
             result["action"] = "HOLD"
