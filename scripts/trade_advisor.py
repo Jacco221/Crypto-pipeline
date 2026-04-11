@@ -200,6 +200,43 @@ def _compare_snapshots(before: dict, after: dict) -> str:
 # Bepaal welke actie nodig is
 # ---------------------------------------------------------------------------
 
+def _check_pump_filter(symbol: str, max_7d_pct: float = 100.0) -> dict:
+    """
+    Blokkeer aankoop als een coin meer dan max_7d_pct is gestegen in 7 dagen.
+    Voorkomt instappen na extreme pumps (momentum chasing).
+    """
+    try:
+        pair = find_usd_pair(symbol)
+        if not pair:
+            return {"blocked": False}
+        # Haal 7d koersverandering op via CoinGecko
+        import requests as _req
+        cg_id_map = {
+            "RAVE": "ravedao", "CFG": "centrifuge", "XPL": "xenoplasm",
+            "BANANAS31": "bananas31", "BTC": "bitcoin", "ETH": "ethereum",
+        }
+        cg_id = cg_id_map.get(symbol.upper(), symbol.lower())
+        r = _req.get(
+            f"https://api.coingecko.com/api/v3/coins/{cg_id}",
+            params={"localization": "false", "tickers": "false", "community_data": "false"},
+            timeout=10,
+        )
+        if r.status_code != 200:
+            return {"blocked": False}
+        data = r.json()
+        chg_7d = data.get("market_data", {}).get("price_change_percentage_7d", 0) or 0
+        if chg_7d >= max_7d_pct:
+            return {
+                "blocked": True,
+                "reason": f"⛔ Pump filter: {symbol} is +{chg_7d:.0f}% in 7 dagen (max {max_7d_pct:.0f}%) — niet instappen na extreme pump",
+                "chg_7d": chg_7d,
+            }
+        return {"blocked": False, "chg_7d": chg_7d}
+    except Exception as e:
+        print(f"[Advisor] Pump filter fout voor {symbol}: {e}")
+        return {"blocked": False}
+
+
 def determine_action(reports_dir: Path) -> dict:
     """
     Analyseer pipeline output + Kraken positie → actie bepalen.
@@ -457,6 +494,13 @@ def determine_action(reports_dir: Path) -> dict:
         result["switch_analysis"] = switch
 
         if switch["switch"]:
+            # Pump filter — niet instappen na extreme pump (>100% in 7 dagen)
+            pump = _check_pump_filter(best_target)
+            if pump["blocked"]:
+                result["action"] = "HOLD"
+                result["reason"] = f"Regime is {regime}. {pump['reason']}"
+                return result
+
             # Token unlock check vóór switch
             from src.token_unlocks import check_upcoming_unlocks, unlock_check_text
             unlock = check_upcoming_unlocks(best_target)
@@ -503,6 +547,13 @@ def determine_action(reports_dir: Path) -> dict:
                 buy_reason = dip_reason
 
         if buy_target:
+            # Pump filter — niet instappen na extreme pump (>100% in 7 dagen)
+            pump = _check_pump_filter(buy_target)
+            if pump["blocked"]:
+                result["action"] = "HOLD"
+                result["reason"] = f"Regime is {regime}. {pump['reason']}"
+                return result
+
             # Token unlock check vóór aankoop
             from src.token_unlocks import check_upcoming_unlocks, unlock_check_text
             unlock = check_upcoming_unlocks(buy_target)
