@@ -544,6 +544,34 @@ def run_advisor(reports_dir: Path) -> None:
         )
         print(f"[Advisor] ⚠️ Onbekende posities: {names}")
 
+    # ── DETECTEER UITGEVOERDE NATIVE TRAILING STOP ───────────────────────────
+    # Als positions.json een coin heeft maar die staat niet meer op Kraken
+    # → Kraken heeft de trailing stop uitgevoerd tussen twee pipeline runs in.
+    saved_positions = load_positions()
+    for saved in saved_positions:
+        sym = saved.get("symbol", "")
+        if not sym:
+            continue
+        still_on_kraken = any(p["symbol"].upper() == sym.upper() for p in all_pos)
+        if not still_on_kraken:
+            entry_price = saved.get("entry_price", 0)
+            entry_usd = saved.get("entry_usd", 0)
+            print(f"[Advisor] 🛑 Trailing stop uitgevoerd door Kraken: {sym}")
+            send_message(
+                f"🛑 <b>Trailing stop uitgevoerd: {sym}</b>\n\n"
+                f"Kraken heeft automatisch verkocht terwijl de pipeline niet draaide.\n"
+                f"Ingekocht @ ${entry_price:.6f} (~${entry_usd:.2f})\n\n"
+                f"💵 Positie is nu USD. Pipeline bepaalt volgende stap."
+            )
+            log_trade(action="TRAILING_STOP_TRIGGERED", symbol=sym,
+                      price=0, amount_usd=entry_usd, entry_price=entry_price,
+                      source="kraken_native_trailing_stop")
+    # Ruim verlopen posities op uit state
+    active_symbols = {p["symbol"].upper() for p in all_pos}
+    remaining = [s for s in saved_positions if s.get("symbol", "").upper() in active_symbols]
+    if len(remaining) != len(saved_positions):
+        save_positions(remaining)
+
     # ── NATIVE TRAILING STOP CHECK ────────────────────────────────────────────
     # Controleer of er een native trailing-stop op Kraken staat voor elke positie.
     # Als er geen is (bijv. na herstart of handmatige trade), place er een.
@@ -601,7 +629,12 @@ def run_advisor(reports_dir: Path) -> None:
         label = "STOP-LOSS" if action["action"] == "STOP_LOSS" else "TAKE-PROFIT"
         current_price = action.get("current_price", 0)
 
-        from src.kraken import place_market_order
+        from src.kraken import place_market_order, cancel_all_orders
+        try:
+            cancel_all_orders()
+            import time as _t; _t.sleep(2)
+        except Exception as e:
+            print(f"[Advisor] Cancel waarschuwing ({label}): {e}")
         result = place_market_order(pair, "sell", current["amount"])
         position = load_position()
         entry_price = position.get("entry_price") if position else None
@@ -672,7 +705,14 @@ def run_advisor(reports_dir: Path) -> None:
             f"<b>Portfolio VOOR:</b>\n{_snapshot_text(snap_before)}"
         )
 
-        from src.kraken import place_market_order
+        from src.kraken import place_market_order, cancel_all_orders
+        import time as _time
+        try:
+            cancel_all_orders()
+            _time.sleep(2)
+        except Exception as e:
+            print(f"[Advisor] Cancel waarschuwing (sell_to_stable): {e}")
+
         all_txids = []
         sold_parts = []
         saved_positions = load_positions()
@@ -839,7 +879,16 @@ def run_advisor(reports_dir: Path) -> None:
                             "source": "pipeline_diversify",
                         })
                         all_txids.extend(result_order.get("txid", []))
-                        bought_parts.append(f"✅ <b>{sym}</b> ~${actual_usd:.2f} @ ${entry_price:.4f}")
+                        # Trailing stop per coin
+                        ts_note = ""
+                        try:
+                            place_native_trailing_stop(pair_part, verif["amount"],
+                                                       trail_pct=TRAIL_PCT,
+                                                       current_price=entry_price)
+                            ts_note = f" 🛑-{TRAIL_PCT*100:.0f}%"
+                        except Exception as e:
+                            ts_note = f" ⚠️TS:{e}"
+                        bought_parts.append(f"✅ <b>{sym}</b> ~${actual_usd:.2f} @ ${entry_price:.4f}{ts_note}")
                         log_trade(
                             action="BUY", symbol=sym, price=entry_price,
                             amount_usd=actual_usd, source="pipeline_diversify",
