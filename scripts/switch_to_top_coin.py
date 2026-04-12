@@ -162,7 +162,7 @@ if verif["confirmed"]:
     try:
         from src.kraken import place_native_trailing_stop
         place_native_trailing_stop(find_usd_pair(TARGET), actual_amount, trail_pct=TRAIL_PCT, current_price=entry_price)
-        sl_note = f"\n🛑 Native trailing stop: -{TRAIL_PCT*100:.0f}% (Kraken real-time)"
+        sl_note = f"\n🛑 Trailing stop geplaatst: -{TRAIL_PCT*100:.0f}% van instapprijs"
     except Exception as e:
         sl_note = f"\n⚠️ Trailing stop mislukt: {e}"
 

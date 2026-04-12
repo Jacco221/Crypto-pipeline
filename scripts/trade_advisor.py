@@ -664,15 +664,25 @@ def run_advisor(reports_dir: Path) -> None:
         try:
             trail = update_trailing_stop(sym, price, trail_pct=TRAIL_PCT)
             if trail["action"] == "placed":
-                print(f"[Advisor] 🛑 Native trailing stop geplaatst voor {sym} (-{TRAIL_PCT*100:.0f}%)")
+                new = trail.get("new_stop", 0)
+                print(f"[Advisor] 🛑 Trailing stop geplaatst voor {sym}: ${new:.4f} (-{TRAIL_PCT*100:.0f}%)")
                 send_message(
-                    f"🛑 <b>Native trailing stop geplaatst: {sym}</b>\n\n"
-                    f"Kraken volgt de prijs nu real-time.\n"
-                    f"Stop activeert bij -{TRAIL_PCT*100:.0f}% daling van de piek.\n\n"
-                    f"✅ Je positie is beschermd — ook tussen pipeline runs."
+                    f"🛑 <b>Trailing stop geplaatst: {sym}</b>\n\n"
+                    f"Stop: <b>${new:.4f}</b> (-{TRAIL_PCT*100:.0f}% van ${price:.4f})\n"
+                    f"✅ Positie beschermd."
+                )
+            elif trail["action"] == "updated":
+                old = trail.get("old_stop", 0)
+                new = trail.get("new_stop", 0)
+                print(f"[Advisor] 📈 Trailing stop omhoog {sym}: ${old:.4f} → ${new:.4f}")
+                send_message(
+                    f"📈 <b>Trailing stop omhoog: {sym}</b>\n\n"
+                    f"Prijs gestegen → stop bijgewerkt\n"
+                    f"Oud: ${old:.4f} → Nieuw: <b>${new:.4f}</b> (-{TRAIL_PCT*100:.0f}% van ${price:.4f})\n"
+                    f"✅ Winst beter beschermd."
                 )
             elif trail["action"] == "no_change":
-                print(f"[Advisor] ✓ Native trailing stop actief voor {sym} (Kraken beheert real-time)")
+                print(f"[Advisor] ✓ Stop actief voor {sym} @ ${trail.get('existing_stop', 0):.4f}")
         except Exception as e:
             print(f"[Advisor] Trailing stop fout voor {sym}: {e}")
 
@@ -891,7 +901,7 @@ def run_advisor(reports_dir: Path) -> None:
                             place_native_trailing_stop(target_pair, verif["amount"],
                                                        trail_pct=TRAIL_PCT,
                                                        current_price=entry_price_new)
-                            sl_note = f"\n🛑 Native trailing stop: -{TRAIL_PCT*100:.0f}% (Kraken real-time)"
+                            sl_note = f"\n🛑 Trailing stop geplaatst: -{TRAIL_PCT*100:.0f}% van instapprijs"
                         else:
                             sl_note = "\n⚠️ Trailing stop overgeslagen — positie niet geverifieerd"
                     except Exception as e:
@@ -1035,7 +1045,7 @@ def run_advisor(reports_dir: Path) -> None:
                 sl_note = ""
                 try:
                     place_native_trailing_stop(pair, actual_amount, trail_pct=TRAIL_PCT, current_price=entry_price)
-                    sl_note = f"\n🛑 Native trailing stop: -{TRAIL_PCT*100:.0f}% (Kraken real-time)"
+                    sl_note = f"\n🛑 Trailing stop geplaatst: -{TRAIL_PCT*100:.0f}% van instapprijs"
                 except Exception as e:
                     sl_note = f"\n⚠️ Trailing stop plaatsen mislukt: {e}"
 

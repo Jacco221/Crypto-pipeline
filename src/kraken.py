@@ -359,58 +359,24 @@ def get_trailing_stop_order(symbol: str) -> Optional[dict]:
     return None
 
 
-def place_native_trailing_stop(pair: str, volume: float, trail_pct: float = 0.20,
-                               current_price: Optional[float] = None) -> Dict[str, Any]:
+def place_trailing_stop(pair: str, volume: float, trail_pct: float = 0.20,
+                        current_price: Optional[float] = None) -> Dict[str, Any]:
     """
-    Plaats een NATIVE Kraken trailing-stop order met fallback naar stop-loss.
+    Plaats een stop-loss order op -trail_pct van de huidige prijs.
 
-    Probeert achtereenvolgens:
-    1. trailing-stop met negatief absoluut bedrag (bijv. "-0.4213")
-    2. trailing-stop met positief absoluut bedrag (bijv. "0.4213")
-    3. Fallback: gewone stop-loss op -trail_pct van huidige prijs
+    Dit is de basis van onze gesimuleerde trailing stop:
+    - Bij aankoop: stop op -20% van instapprijs
+    - Bij elke scanner run: als prijs gestegen → cancel + herplaats hoger
+    - Stop gaat nooit omlaag (one-way ratchet)
 
-    trail_pct: trailing offset als fractie (0.20 = 20% onder de peak)
-    current_price: huidige prijs — wordt live opgehaald als niet opgegeven
+    Stop-loss orders werken betrouwbaar op Kraken voor alle pairs.
     """
     if current_price is None:
         ticker = get_ticker(pair)
         current_price = ticker.get("last", 0)
 
-    trail_amount = round(current_price * trail_pct, 6)
-    stop_price = round(current_price * (1 - trail_pct), 6)
+    stop_price = round(current_price * (1 - trail_pct), 4)
 
-    # Poging 1: negatief trail bedrag (Kraken sell trailing-stop conventie)
-    try:
-        data = {
-            "pair": pair,
-            "type": "sell",
-            "ordertype": "trailing-stop",
-            "price": f"-{trail_amount}",
-            "volume": str(volume),
-        }
-        result = _private_request("AddOrder", data)
-        result["method"] = "trailing-stop-negative"
-        return result
-    except Exception as e1:
-        print(f"[Kraken] trailing-stop negatief mislukt: {e1}")
-
-    # Poging 2: positief trail bedrag
-    try:
-        data = {
-            "pair": pair,
-            "type": "sell",
-            "ordertype": "trailing-stop",
-            "price": str(trail_amount),
-            "volume": str(volume),
-        }
-        result = _private_request("AddOrder", data)
-        result["method"] = "trailing-stop-positive"
-        return result
-    except Exception as e2:
-        print(f"[Kraken] trailing-stop positief mislukt: {e2}")
-
-    # Poging 3: fallback naar gewone stop-loss
-    print(f"[Kraken] Fallback naar stop-loss @ {stop_price} (-{trail_pct*100:.0f}%)")
     data = {
         "pair": pair,
         "type": "sell",
@@ -419,8 +385,17 @@ def place_native_trailing_stop(pair: str, volume: float, trail_pct: float = 0.20
         "volume": str(volume),
     }
     result = _private_request("AddOrder", data)
-    result["method"] = "stop-loss-fallback"
+    result["method"] = "stop-loss"
+    result["stop_price"] = stop_price
+    result["trail_pct"] = trail_pct
     return result
+
+
+# Alias voor backwards compatibility
+def place_native_trailing_stop(pair: str, volume: float, trail_pct: float = 0.20,
+                               current_price: Optional[float] = None) -> Dict[str, Any]:
+    """Alias voor place_trailing_stop — gebruikt stop-loss orders die betrouwbaar werken."""
+    return place_trailing_stop(pair, volume, trail_pct, current_price)
 
 
 def update_trailing_stop(symbol: str, current_price: float,
@@ -448,21 +423,22 @@ def update_trailing_stop(symbol: str, current_price: float,
         result["action"] = "no_pair"
         return result
 
-    # Als er al een native trailing-stop staat → niets te doen
-    existing_ts = get_trailing_stop_order(symbol)
-    if existing_ts is not None:
-        result["action"] = "no_change"
-        result["existing_stop"] = existing_ts.get("stopprice", 0)
-        return result
+    new_stop = round(current_price * (1 - trail_pct), 4)
+    result["new_stop"] = new_stop
 
-    # Als er een gewone stop-loss staat → ook goed, niet cancelen
+    # Haal huidige stop op (stop-loss of trailing-stop)
     existing_sl = get_stop_loss_level(symbol)
-    if existing_sl is not None:
+    existing_ts = get_trailing_stop_order(symbol)
+    current_stop = existing_sl or (existing_ts.get("stopprice", 0) if existing_ts else None)
+    result["old_stop"] = current_stop
+
+    # Stop gevonden én al hoger of gelijk → niet aanpassen (nooit omlaag)
+    if current_stop and new_stop <= current_stop:
         result["action"] = "no_change"
-        result["existing_stop"] = existing_sl
+        result["existing_stop"] = current_stop
         return result
 
-    # Geen enkele bescherming → cancel alles + plaats nieuwe stop
+    # Geen stop of prijs gestegen → cancel alles + herplaats hoger
     cancel_all_orders()
     time.sleep(2)
 
@@ -474,8 +450,8 @@ def update_trailing_stop(symbol: str, current_price: float,
             break
 
     if volume > 0:
-        place_native_trailing_stop(pair, volume, trail_pct)
-        result["action"] = "placed"
+        place_trailing_stop(pair, volume, trail_pct, current_price)
+        result["action"] = "updated" if current_stop else "placed"
         result["updated"] = True
 
     return result
