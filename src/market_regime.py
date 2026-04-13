@@ -216,10 +216,26 @@ def determine_market_regime(
     else:
         regime = "RISK_OFF"
 
+    # Macro kalender check — overrule naar CAUTIOUS bij naderende Fed/CPI events
+    macro_note = ""
+    try:
+        from src.macro_calendar import check_macro_events
+        macro = check_macro_events()
+        signals["macro_event"] = macro["events"][0] if macro["events"] else None
+        signals["macro_risk"] = macro["risk"]
+        if macro["override_cautious"] and regime == "RISK_ON":
+            regime = "CAUTIOUS"
+            signals["macro_override"] = f"RISK_ON → CAUTIOUS: {macro['reason']}"
+        macro_note = macro["reason"] if macro["risk"] != "SAFE" else ""
+    except Exception as e:
+        signals["macro_event"] = None
+        signals["macro_risk"] = "SAFE"
+
     return {
         "regime": regime,
         "regime_score": regime_score,
         "signals": signals,
+        "macro_note": macro_note,
         "as_of": dt.utcnow().isoformat(timespec="seconds") + "Z",
         "last_close": round(last_close, 2),
         "ma20": round(last_ma_short, 2),
@@ -227,7 +243,7 @@ def determine_market_regime(
         "mvrv": mvrv_data.get("mvrv"),
         "mvrv_source": mvrv_data.get("source"),
         "mvrv_interpretation": mvrv_data.get("interpretation"),
-        "rule": "score>=3->RISK_ON, ==2->CAUTIOUS, <=1->RISK_OFF | funding<-0.05%→+1 | funding>0.10%→-1 | MVRV<1→+1 | MVRV>3.5→override RISK_OFF",
+        "rule": "score>=3->RISK_ON, ==2->CAUTIOUS, <=1->RISK_OFF | funding<-0.05%→+1 | funding>0.10%→-1 | MVRV<1→+1 | MVRV>3.5→override RISK_OFF | macro event→CAUTIOUS",
         "source": "CoinGecko + alternative.me + Stooq + Binance + MA365",
     }
 

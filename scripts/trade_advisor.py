@@ -694,7 +694,18 @@ def run_advisor(reports_dir: Path) -> None:
 
     regime = action["regime"]
     regime_emoji = {"RISK_ON": "🟢", "CAUTIOUS": "🟡", "RISK_OFF": "🔴"}.get(regime, "⚪")
+    macro_note = action.get("alloc_decision", {}).get("macro_note", "") or ""
+    # Haal macro note ook direct op als die er is
+    try:
+        from src.macro_calendar import macro_note as _macro_note
+        _mn = _macro_note()
+        if _mn:
+            macro_note = _mn
+    except Exception:
+        pass
     regime_header = f"{regime_emoji} Regime: <b>{regime}</b>"
+    if macro_note:
+        regime_header += f"\n{macro_note}"
 
     # P&L info toevoegen aan HOLD berichten
     pnl_text = ""
