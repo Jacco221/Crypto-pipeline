@@ -98,15 +98,25 @@ def send_daily_summary(reports_dir: Path) -> bool:
             except Exception:
                 pass
 
-    # Parse top 3 uit CSV
+    # Parse top 5 koopbare coins uit CSV (pump-geblokkeerde coins overslaan)
     scores_path = reports_dir / "scores_latest.csv"
     top_lines = ""
     if scores_path.exists():
         import csv
+        max_7d = 200.0 if regime == "RISK_ON" else 100.0
         with open(scores_path) as f:
-            reader = csv.DictReader(f)
-            rows = list(reader)[:3]
-        for i, row in enumerate(rows, 1):
+            all_rows = list(csv.DictReader(f))
+        buyable = []
+        for row in all_rows:
+            try:
+                chg = float(row.get("chg_7d_raw", 0) or 0)
+            except ValueError:
+                chg = 0.0
+            if chg < max_7d:
+                buyable.append(row)
+            if len(buyable) == 5:
+                break
+        for i, row in enumerate(buyable, 1):
             sym = row.get("symbol", "?")
             total = row.get("Total_%", "?")
             top_lines += f"  {i}. <b>{sym}</b> — {total}%\n"
@@ -143,7 +153,7 @@ def send_daily_summary(reports_dir: Path) -> bool:
         f"<b>Regime:</b> {regime_line}\n"
         f"<b>Advies:</b> {advice_line}"
         f"{rotation_text}\n\n"
-        f"<b>Top 3:</b>\n{top_lines}\n"
+        f"<b>Top 5 (koopbaar):</b>\n{top_lines}\n"
         f"{alloc_text}"
     )
 
@@ -529,19 +539,30 @@ def send_status_report(reports_dir: Path) -> bool:
     except Exception:
         lines.append("💼 Positie: onbekend")
 
-    # 3. Top 3 coins
+    # 3. Top 5 koopbare coins (pump-geblokkeerde coins overslaan)
     lines.append("")
     scores_path = reports_dir / "scores_latest.csv"
     if scores_path.exists():
         try:
             import csv
+            max_7d = 200.0 if regime == "RISK_ON" else 100.0
             with open(scores_path) as f:
-                rows = list(csv.DictReader(f))[:3]
+                all_rows = list(csv.DictReader(f))
+            buyable = []
+            for row in all_rows:
+                try:
+                    chg = float(row.get("chg_7d_raw", 0) or 0)
+                except ValueError:
+                    chg = 0.0
+                if chg < max_7d:
+                    buyable.append(row)
+                if len(buyable) == 5:
+                    break
             top_text = "\n".join(
                 f"  {i+1}. <b>{r['symbol']}</b> — {r.get('Total_%', '?')}%"
-                for i, r in enumerate(rows)
+                for i, r in enumerate(buyable)
             )
-            lines.append(f"📈 <b>Top 3 coins:</b>\n{top_text}")
+            lines.append(f"📈 <b>Top 5 (koopbaar):</b>\n{top_text}")
         except Exception:
             pass
 
