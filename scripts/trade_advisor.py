@@ -529,9 +529,6 @@ def determine_action(reports_dir: Path) -> dict:
                 f"Regime is {regime}. Blijf in {current['symbol']}. "
                 f"{switch['reason']}"
             )
-            if dip_reason:
-                result["reason"] += f" (Dip info: {dip_reason})"
-
     elif not current and usd_balance > DUST_THRESHOLD_USD:
         # Geen positie, USD beschikbaar → koop pipeline top OF dip-kans
         # Bij CAUTIOUS: gebruik slechts 50% van beschikbaar USD
@@ -591,9 +588,6 @@ def determine_action(reports_dir: Path) -> dict:
             )
         else:
             result["reason"] = f"Regime is {regime}. Geen positie en geen koopadvies — HOLD."
-        if dip_reason:
-            result["reason"] += f" (Dip info: {dip_reason})"
-
     return result
 
 
