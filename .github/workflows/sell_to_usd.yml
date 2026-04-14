@@ -22,42 +22,46 @@ jobs:
         run: pip install -r requirements.txt
       - name: Verkoop alle crypto naar USD
         run: |
-          python3 -c "
-import sys, os
+          python3 - <<'PY'
+import sys, time
 sys.path.insert(0, '.')
-from src.kraken import get_all_positions, cancel_all_orders, place_market_order, find_usd_pair, get_ticker
+from src.kraken import get_balance, cancel_all_orders, place_market_order, find_usd_pair, get_ticker
 from src.notify import send_message
 from src.state import clear_positions
-import time
 
-positions = get_all_positions()
-if not positions:
+STABLE = {"ZUSD", "USD", "USDT", "USDC", "DAI"}
+
+balances = get_balance()
+crypto = {k: v for k, v in balances.items() if k not in STABLE and v > 0.0001}
+
+if not crypto:
     send_message('ℹ️ Geen open posities om te verkopen.')
     sys.exit(0)
 
-for pos in positions:
-    sym = pos['symbol']
-    amount = pos['amount']
-    est_usd = pos['est_usd']
-    pair = find_usd_pair(sym)
+try:
+    cancel_all_orders()
+    time.sleep(2)
+except Exception as e:
+    print(f'Cancel waarschuwing: {e}')
+
+for asset, amount in crypto.items():
+    sym = asset.lstrip('X').rstrip('Z') if len(asset) == 4 else asset
+    pair = find_usd_pair(sym) or find_usd_pair(asset)
     if not pair:
-        send_message(f'❌ Geen USD pair gevonden voor {sym}')
+        send_message(f'❌ Geen USD pair gevonden voor {asset}')
         continue
-    send_message(f'🔴 <b>Verkoop gestart: {sym}</b>\nHoeveelheid: {amount:.4f} (~\${est_usd:.2f})')
-    try:
-        cancel_all_orders()
-        time.sleep(2)
-    except Exception as e:
-        print(f'Cancel waarschuwing: {e}')
-    result = place_market_order(pair, 'sell', amount)
-    time.sleep(3)
     ticker = get_ticker(pair)
-    sell_price = ticker.get('last', 0)
+    est_usd = amount * ticker.get('last', 0)
+    send_message(f'🔴 <b>Verkoop gestart: {sym}</b>\nHoeveelheid: {amount:.4f} (~${est_usd:.2f})')
+    place_market_order(pair, 'sell', amount)
+    time.sleep(3)
+    ticker2 = get_ticker(pair)
+    sell_price = ticker2.get('last', 0)
     send_message(
         f'✅ <b>{sym} verkocht naar USD</b>\n'
-        f'@ \${sell_price:.4f}\n'
-        f'~\${amount * sell_price:.2f} ontvangen'
+        f'@ ${sell_price:.4f}\n'
+        f'~${amount * sell_price:.2f} ontvangen'
     )
 
 clear_positions()
-"
+PY
