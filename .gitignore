@@ -13,6 +13,17 @@ data/reports/*.json
 data/reports/*.md
 data/state/
 
+# Root-level output bestanden (stale artefacten; gebruik data/reports/ als bron)
+/allocation_latest.json
+/scores_latest.csv
+/scores_latest.json
+/latest.csv
+/latest.json
+/top5_latest.csv
+/top5_latest.md
+/dips_latest.csv
+/dips_latest.md
+
 # Claude local settings
 .claude/
 

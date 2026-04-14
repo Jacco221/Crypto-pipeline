@@ -1,24 +1,39 @@
 #!/usr/bin/env python3
+"""
+advise_allocation.py — Bepaal allocatie o.b.v. score-kloof (diversificatie-guard).
+
+Leest rankings UITSLUITEND uit scores_latest.csv (de single source of truth).
+top5_latest.csv wordt alleen nog als fallback gebruikt als scores_latest.csv
+niet beschikbaar is.
+"""
 import argparse, json, sys
 from pathlib import Path
 import pandas as pd
 
-def load_top5(top5_csv: Path) -> pd.DataFrame:
-    df = pd.read_csv(top5_csv)
-    cols = [c.lower() for c in df.columns]
+def load_scores(scores_csv: Path, top_n: int = 5) -> pd.DataFrame:
+    """
+    Laad rankings uit scores_latest.csv (primaire bron).
+    Accepteer zowel 'score' als 'total_%' als score-kolom.
+    Retourneert de top N rijen, gesorteerd op score (desc).
+    """
+    df = pd.read_csv(scores_csv)
     df.columns = [c.lower() for c in df.columns]
     # Accepteer zowel 'score' als 'total_%' als score-kolom
     if "score" not in df.columns and "total_%" in df.columns:
         df["score"] = df["total_%"]
     if "symbol" not in df.columns:
-        raise ValueError("top5 CSV mist kolom 'symbol'")
+        raise ValueError(f"{scores_csv} mist kolom 'symbol'")
     if "score" not in df.columns:
-        raise ValueError("top5 CSV mist kolom 'score' of 'total_%'")
-    return df.sort_values("score", ascending=False).reset_index(drop=True)
+        raise ValueError(f"{scores_csv} mist kolom 'score' of 'total_%'")
+    # scores_latest.csv is al gesorteerd door run.py, maar sort opnieuw voor zekerheid
+    return df.sort_values("score", ascending=False).head(top_n).reset_index(drop=True)
 
 def main():
     ap = argparse.ArgumentParser(description="Bepaal allocatie o.b.v. score-kloof (diversificatie-guard).")
-    ap.add_argument("--top5", default="data/reports/top5_latest.csv", type=Path)
+    ap.add_argument("--scores", default="data/reports/scores_latest.csv", type=Path,
+                    help="Primaire bron: scores_latest.csv (single source of truth)")
+    ap.add_argument("--top5", default="data/reports/top5_latest.csv", type=Path,
+                    help="Fallback als --scores niet bestaat (verouderd; gebruik --scores)")
     ap.add_argument("--out",  default="data/reports/allocation_latest.json", type=Path)
     ap.add_argument("--gap",  type=float, default=2.0, help="Drempel in score-punten: onder deze gap -> diversify.")
     ap.add_argument("--split",type=float, default=0.5, help="Verdeling naar #1 bij diversify (0.5=50/50; 0.6=60/40).")
@@ -26,7 +41,17 @@ def main():
     ap.add_argument("--md-file", default="data/reports/top5_latest.md", type=Path)
     args = ap.parse_args()
 
-    df = load_top5(args.top5)
+    # Gebruik scores_latest.csv als primaire bron; top5_latest.csv als fallback
+    if args.scores.exists():
+        df = load_scores(args.scores)
+        print(f"[ALLOCATION] Bron: {args.scores} ({len(df)} rijen geladen)", file=sys.stderr)
+    elif args.top5.exists():
+        print(f"[ALLOCATION] ⚠️  {args.scores} niet gevonden; fallback naar {args.top5}", file=sys.stderr)
+        df = load_scores(args.top5)
+    else:
+        print(f"[ALLOCATION] ❌  Noch {args.scores} noch {args.top5} gevonden.", file=sys.stderr)
+        sys.exit(1)
+
     gap = None
     if len(df) < 2:
         print("⚠️  Minder dan 2 coins in top5; ga 100% in #1.", file=sys.stderr)

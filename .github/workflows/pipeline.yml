@@ -79,7 +79,7 @@ jobs:
       - name: Run allocation advisor
         run: |
           python3 scripts/advise_allocation.py \
-            --top5 data/reports/top5_latest.csv \
+            --scores data/reports/scores_latest.csv \
             --out data/reports/allocation_latest.json \
             --append-md --md-file data/reports/top5_latest.md || true
 
