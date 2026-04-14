@@ -200,11 +200,14 @@ def _compare_snapshots(before: dict, after: dict) -> str:
 # Bepaal welke actie nodig is
 # ---------------------------------------------------------------------------
 
-def _check_pump_filter(symbol: str, max_7d_pct: float = 100.0) -> dict:
+def _check_pump_filter(symbol: str, regime: str = "CAUTIOUS") -> dict:
     """
-    Blokkeer aankoop als een coin meer dan max_7d_pct is gestegen in 7 dagen.
-    Voorkomt instappen na extreme pumps (momentum chasing).
+    Blokkeer aankoop als een coin te veel is gestegen in 7 dagen.
+    Drempel is regime-afhankelijk:
+      CAUTIOUS / RISK_OFF → 100%  (strikt: onzekere markt)
+      RISK_ON             → 200%  (soepeler: bull markt, grote moves zijn reëler)
     """
+    max_7d_pct = 200.0 if regime == "RISK_ON" else 100.0
     try:
         pair = find_usd_pair(symbol)
         if not pair:
@@ -228,7 +231,7 @@ def _check_pump_filter(symbol: str, max_7d_pct: float = 100.0) -> dict:
         if chg_7d >= max_7d_pct:
             return {
                 "blocked": True,
-                "reason": f"⛔ Pump filter: {symbol} is +{chg_7d:.0f}% in 7 dagen (max {max_7d_pct:.0f}%) — niet instappen na extreme pump",
+                "reason": f"⛔ Pump filter: {symbol} is +{chg_7d:.0f}% in 7 dagen (max {max_7d_pct:.0f}% bij {regime}) — niet instappen na extreme pump",
                 "chg_7d": chg_7d,
             }
         return {"blocked": False, "chg_7d": chg_7d}
@@ -494,8 +497,8 @@ def determine_action(reports_dir: Path) -> dict:
         result["switch_analysis"] = switch
 
         if switch["switch"]:
-            # Pump filter — niet instappen na extreme pump (>100% in 7 dagen)
-            pump = _check_pump_filter(best_target)
+            # Pump filter — drempel afhankelijk van regime
+            pump = _check_pump_filter(best_target, regime=regime)
             if pump["blocked"]:
                 result["action"] = "HOLD"
                 result["reason"] = f"Regime is {regime}. {pump['reason']}"
@@ -547,8 +550,8 @@ def determine_action(reports_dir: Path) -> dict:
                 buy_reason = dip_reason
 
         if buy_target:
-            # Pump filter — niet instappen na extreme pump (>100% in 7 dagen)
-            pump = _check_pump_filter(buy_target)
+            # Pump filter — drempel afhankelijk van regime
+            pump = _check_pump_filter(buy_target, regime=regime)
             if pump["blocked"]:
                 result["action"] = "HOLD"
                 result["reason"] = f"Regime is {regime}. {pump['reason']}"
