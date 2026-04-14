@@ -200,44 +200,73 @@ def _compare_snapshots(before: dict, after: dict) -> str:
 # Bepaal welke actie nodig is
 # ---------------------------------------------------------------------------
 
-def _check_pump_filter(symbol: str, regime: str = "CAUTIOUS") -> dict:
+def _check_pump_filter(symbol: str, regime: str = "CAUTIOUS",
+                       reports_dir: Path = None) -> dict:
     """
     Blokkeer aankoop als een coin te veel is gestegen in 7 dagen.
     Drempel is regime-afhankelijk:
       CAUTIOUS / RISK_OFF → 100%  (strikt: onzekere markt)
       RISK_ON             → 200%  (soepeler: bull markt, grote moves zijn reëler)
+
+    Primaire bron: scores_latest.csv (al beschikbaar, geen extra API call)
+    Fallback: CoinGecko API
+    Bij twijfel (API fout, geen data): BLOKKEER — veiligheid boven kans.
     """
     max_7d_pct = 200.0 if regime == "RISK_ON" else 100.0
-    try:
-        pair = find_usd_pair(symbol)
-        if not pair:
-            return {"blocked": False}
-        # Haal 7d koersverandering op via CoinGecko
-        import requests as _req
-        cg_id_map = {
-            "RAVE": "ravedao", "CFG": "centrifuge", "XPL": "xenoplasm",
-            "BANANAS31": "bananas31", "BTC": "bitcoin", "ETH": "ethereum",
-        }
-        cg_id = cg_id_map.get(symbol.upper(), symbol.lower())
-        r = _req.get(
-            f"https://api.coingecko.com/api/v3/coins/{cg_id}",
-            params={"localization": "false", "tickers": "false", "community_data": "false"},
-            timeout=10,
-        )
-        if r.status_code != 200:
-            return {"blocked": False}
-        data = r.json()
-        chg_7d = data.get("market_data", {}).get("price_change_percentage_7d", 0) or 0
-        if chg_7d >= max_7d_pct:
-            return {
-                "blocked": True,
-                "reason": f"⛔ Pump filter: {symbol} is +{chg_7d:.0f}% in 7 dagen (max {max_7d_pct:.0f}% bij {regime}) — niet instappen na extreme pump",
-                "chg_7d": chg_7d,
+    chg_7d = None
+
+    # Primaire bron: scores_latest.csv
+    if reports_dir:
+        try:
+            import csv as _csv
+            scores_path = reports_dir / "scores_latest.csv"
+            if scores_path.exists():
+                with open(scores_path) as f:
+                    for row in _csv.DictReader(f):
+                        if row.get("symbol", "").upper() == symbol.upper():
+                            chg_7d = float(row.get("RS_7d_%", 0) or 0)
+                            break
+        except Exception as e:
+            print(f"[Advisor] Pump filter scores CSV fout: {e}")
+
+    # Fallback: CoinGecko API
+    if chg_7d is None:
+        try:
+            import requests as _req
+            cg_id_map = {
+                "RAVE": "ravedao", "CFG": "centrifuge", "XPL": "xenoplasm",
+                "BANANAS31": "bananas31", "BTC": "bitcoin", "ETH": "ethereum",
             }
-        return {"blocked": False, "chg_7d": chg_7d}
-    except Exception as e:
-        print(f"[Advisor] Pump filter fout voor {symbol}: {e}")
-        return {"blocked": False}
+            cg_id = cg_id_map.get(symbol.upper(), symbol.lower())
+            r = _req.get(
+                f"https://api.coingecko.com/api/v3/coins/{cg_id}",
+                params={"localization": "false", "tickers": "false",
+                        "community_data": "false"},
+                timeout=10,
+            )
+            if r.status_code == 200:
+                data = r.json()
+                chg_7d = data.get("market_data", {}).get(
+                    "price_change_percentage_7d", None)
+        except Exception as e:
+            print(f"[Advisor] Pump filter CoinGecko fout voor {symbol}: {e}")
+
+    # Bij twijfel (geen data): blokkeer — veiligheid boven kans
+    if chg_7d is None:
+        print(f"[Advisor] Pump filter: geen 7d data voor {symbol} — geblokkeerd (veiligheid)")
+        return {
+            "blocked": True,
+            "reason": f"⛔ Pump filter: geen 7d data voor {symbol} — geblokkeerd (veiligheid boven kans)",
+            "chg_7d": None,
+        }
+
+    if chg_7d >= max_7d_pct:
+        return {
+            "blocked": True,
+            "reason": f"⛔ Pump filter: {symbol} is +{chg_7d:.0f}% in 7 dagen (max {max_7d_pct:.0f}% bij {regime}) — niet instappen na extreme pump",
+            "chg_7d": chg_7d,
+        }
+    return {"blocked": False, "chg_7d": chg_7d}
 
 
 def determine_action(reports_dir: Path) -> dict:
@@ -498,7 +527,7 @@ def determine_action(reports_dir: Path) -> dict:
 
         if switch["switch"]:
             # Pump filter — drempel afhankelijk van regime
-            pump = _check_pump_filter(best_target, regime=regime)
+            pump = _check_pump_filter(best_target, regime=regime, reports_dir=reports_dir)
             if pump["blocked"]:
                 result["action"] = "HOLD"
                 result["reason"] = f"Regime is {regime}. {pump['reason']}"
@@ -548,7 +577,7 @@ def determine_action(reports_dir: Path) -> dict:
 
         if buy_target:
             # Pump filter — drempel afhankelijk van regime
-            pump = _check_pump_filter(buy_target, regime=regime)
+            pump = _check_pump_filter(buy_target, regime=regime, reports_dir=reports_dir)
             if pump["blocked"]:
                 result["action"] = "HOLD"
                 result["reason"] = f"Regime is {regime}. {pump['reason']}"
