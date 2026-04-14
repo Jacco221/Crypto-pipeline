@@ -35,3 +35,4 @@ jobs:
       - name: Switch naar target coin (${{ github.event.inputs.target }})
         run: |
           TARGET_COIN="${{ github.event.inputs.target }}" python3 scripts/switch_to_top_coin.py
+

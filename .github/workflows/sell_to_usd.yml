@@ -1,0 +1,63 @@
+name: Verkoop naar USD
+
+on:
+  workflow_dispatch: {}
+
+env:
+  PYTHONUNBUFFERED: "1"
+  TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+  TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+  KRAKEN_API_KEY: ${{ secrets.KRAKEN_API_KEY }}
+  KRAKEN_API_SECRET: ${{ secrets.KRAKEN_API_SECRET }}
+
+jobs:
+  sell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Verkoop alle crypto naar USD
+        run: |
+          python3 -c "
+import sys, os
+sys.path.insert(0, '.')
+from src.kraken import get_all_positions, cancel_all_orders, place_market_order, find_usd_pair, get_ticker
+from src.notify import send_message
+from src.state import clear_positions
+import time
+
+positions = get_all_positions()
+if not positions:
+    send_message('ℹ️ Geen open posities om te verkopen.')
+    sys.exit(0)
+
+for pos in positions:
+    sym = pos['symbol']
+    amount = pos['amount']
+    est_usd = pos['est_usd']
+    pair = find_usd_pair(sym)
+    if not pair:
+        send_message(f'❌ Geen USD pair gevonden voor {sym}')
+        continue
+    send_message(f'🔴 <b>Verkoop gestart: {sym}</b>\nHoeveelheid: {amount:.4f} (~\${est_usd:.2f})')
+    try:
+        cancel_all_orders()
+        time.sleep(2)
+    except Exception as e:
+        print(f'Cancel waarschuwing: {e}')
+    result = place_market_order(pair, 'sell', amount)
+    time.sleep(3)
+    ticker = get_ticker(pair)
+    sell_price = ticker.get('last', 0)
+    send_message(
+        f'✅ <b>{sym} verkocht naar USD</b>\n'
+        f'@ \${sell_price:.4f}\n'
+        f'~\${amount * sell_price:.2f} ontvangen'
+    )
+
+clear_positions()
+"
