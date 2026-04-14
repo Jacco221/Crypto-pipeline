@@ -613,7 +613,7 @@ def determine_action(reports_dir: Path) -> dict:
                     print(f"[Advisor] Cascade: {best_target} geselecteerd na blokkering top coin")
                 else:
                     result["action"] = "HOLD"
-                    result["reason"] = f"Regime is {regime}. {pump['reason']} Geen alternatief beschikbaar met >{5}% voordeel."
+                    result["reason"] = f"Regime is {regime}. {pump['reason']}. Geen alternatief met >{5}% voordeel beschikbaar — blijf in {current['symbol']}."
                     return result
 
             # Token unlock check vóór switch
@@ -631,9 +631,9 @@ def determine_action(reports_dir: Path) -> dict:
             result["action"] = "SWITCH"
             result["target"] = best_target
             result["unlock_check"] = unlock
+            # Reden: gebruik advantage van het ECHTE doel (cascade of origineel)
             result["reason"] = (
-                f"Regime is {regime}. {switch['reason']} "
-                f"{best_reason}. Switch {current['symbol']} → {best_target}.{unlock_note}"
+                f"Regime is {regime}. {best_reason} Switch {current['symbol']} → {best_target}.{unlock_note}"
             )
         else:
             result["action"] = "HOLD"
