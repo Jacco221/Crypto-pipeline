@@ -215,7 +215,7 @@ def _check_pump_filter(symbol: str, regime: str = "CAUTIOUS",
     max_7d_pct = 200.0 if regime == "RISK_ON" else 100.0
     chg_7d = None
 
-    # Primaire bron: scores_latest.csv
+    # Primaire bron: scores_latest.csv — gebruik chg_7d_raw (echte % koerswijziging)
     if reports_dir:
         try:
             import csv as _csv
@@ -224,7 +224,9 @@ def _check_pump_filter(symbol: str, regime: str = "CAUTIOUS",
                 with open(scores_path) as f:
                     for row in _csv.DictReader(f):
                         if row.get("symbol", "").upper() == symbol.upper():
-                            chg_7d = float(row.get("RS_7d_%", 0) or 0)
+                            raw = row.get("chg_7d_raw", "")
+                            if raw not in ("", None):
+                                chg_7d = float(raw)
                             break
         except Exception as e:
             print(f"[Advisor] Pump filter scores CSV fout: {e}")
