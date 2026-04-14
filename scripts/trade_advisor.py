@@ -200,6 +200,69 @@ def _compare_snapshots(before: dict, after: dict) -> str:
 # Bepaal welke actie nodig is
 # ---------------------------------------------------------------------------
 
+def _find_best_available_target(scores_path, regime: str, reports_dir,
+                                 current_score: float = 0.0,
+                                 min_advantage_pct: float = 5.0,
+                                 current_sym: str = "") -> dict:
+    """
+    Loop door scores_latest.csv van hoog naar laag.
+    Geef de eerste coin terug die:
+      1. Niet de huidige holding is
+      2. Niet geblokkeerd is door pump filter
+      3. Een voordeel >= min_advantage_pct heeft t.o.v. huidige positie
+
+    Returns: {"symbol": ..., "score": ..., "advantage": ..., "pump_note": ...}
+             of {} als er geen geschikte kandidaat is.
+    """
+    import csv as _csv
+    if not scores_path.exists():
+        return {}
+
+    rows = []
+    with open(scores_path) as f:
+        for row in _csv.DictReader(f):
+            sym = row.get("symbol", "").upper()
+            try:
+                score = float(row.get("score", 0))
+            except ValueError:
+                continue
+            rows.append((sym, score, row))
+
+    # Al gesorteerd (scores_latest.csv is gesorteerd op score desc), maar voor zekerheid:
+    rows.sort(key=lambda x: x[1], reverse=True)
+
+    skipped = []
+    for sym, score, row in rows:
+        if sym == current_sym.upper():
+            continue
+
+        # Bereken voordeel t.o.v. huidige holding
+        if current_score > 0:
+            advantage = ((score - current_score) / current_score) * 100
+        else:
+            advantage = 100.0  # geen huidige positie → altijd kopen
+
+        if advantage < min_advantage_pct:
+            # Geen coin met voldoende voordeel meer (lijst is gesorteerd)
+            break
+
+        pump = _check_pump_filter(sym, regime=regime, reports_dir=reports_dir)
+        if pump["blocked"]:
+            skipped.append(f"{sym} ({pump['reason'].split('—')[0].strip()})")
+            continue
+
+        # Gevonden!
+        pump_note = f" Overgeslagen: {', '.join(skipped)}." if skipped else ""
+        return {
+            "symbol": sym,
+            "score": score,
+            "advantage": advantage,
+            "pump_note": pump_note,
+        }
+
+    return {}
+
+
 def _check_pump_filter(symbol: str, regime: str = "CAUTIOUS",
                        reports_dir: Path = None) -> dict:
     """
@@ -531,9 +594,27 @@ def determine_action(reports_dir: Path) -> dict:
             # Pump filter — drempel afhankelijk van regime
             pump = _check_pump_filter(best_target, regime=regime, reports_dir=reports_dir)
             if pump["blocked"]:
-                result["action"] = "HOLD"
-                result["reason"] = f"Regime is {regime}. {pump['reason']}"
-                return result
+                # Cascade: zoek de beste beschikbare coin die niet geblokkeerd is
+                cascade = _find_best_available_target(
+                    scores_path=reports_dir / "scores_latest.csv",
+                    regime=regime,
+                    reports_dir=reports_dir,
+                    current_score=current_score,
+                    min_advantage_pct=5.0,
+                    current_sym=current["symbol"],
+                )
+                if cascade:
+                    best_target = cascade["symbol"]
+                    best_reason = (
+                        f"Pipeline top geblokkeerd ({pump['reason'].split('—')[0].strip()}). "
+                        f"Cascade naar {best_target} (score {cascade['score']*100:.1f}%, "
+                        f"+{cascade['advantage']:.1f}% voordeel).{cascade['pump_note']}"
+                    )
+                    print(f"[Advisor] Cascade: {best_target} geselecteerd na blokkering top coin")
+                else:
+                    result["action"] = "HOLD"
+                    result["reason"] = f"Regime is {regime}. {pump['reason']} Geen alternatief beschikbaar met >{5}% voordeel."
+                    return result
 
             # Token unlock check vóór switch
             from src.token_unlocks import check_upcoming_unlocks, unlock_check_text
@@ -581,9 +662,26 @@ def determine_action(reports_dir: Path) -> dict:
             # Pump filter — drempel afhankelijk van regime
             pump = _check_pump_filter(buy_target, regime=regime, reports_dir=reports_dir)
             if pump["blocked"]:
-                result["action"] = "HOLD"
-                result["reason"] = f"Regime is {regime}. {pump['reason']}"
-                return result
+                # Cascade: zoek de beste beschikbare coin die niet geblokkeerd is
+                cascade = _find_best_available_target(
+                    scores_path=reports_dir / "scores_latest.csv",
+                    regime=regime,
+                    reports_dir=reports_dir,
+                    current_score=0.0,  # geen huidige positie → alle coins komen in aanmerking
+                    min_advantage_pct=0.0,  # geen drempel nodig — we kopen toch
+                    current_sym="",
+                )
+                if cascade:
+                    buy_target = cascade["symbol"]
+                    buy_reason = (
+                        f"Pipeline top geblokkeerd ({pump['reason'].split('—')[0].strip()}). "
+                        f"Cascade naar {buy_target} (score {cascade['score']*100:.1f}%).{cascade['pump_note']}"
+                    )
+                    print(f"[Advisor] Cascade (BUY): {buy_target} geselecteerd na blokkering top coin")
+                else:
+                    result["action"] = "HOLD"
+                    result["reason"] = f"Regime is {regime}. {pump['reason']} Alle alternatieven ook geblokkeerd."
+                    return result
 
             # Token unlock check vóór aankoop
             from src.token_unlocks import check_upcoming_unlocks, unlock_check_text
