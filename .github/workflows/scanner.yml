@@ -65,3 +65,11 @@ jobs:
           KRAKEN_API_SECRET: ${{ secrets.KRAKEN_API_SECRET }}
         run: |
           python3 -m src.notify --commands --reports-dir data/reports || true
+
+      - name: Sla state op (peak_price, positie)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/state/ || true
+          git diff --cached --quiet || git commit -m "chore: update state [skip ci]"
+          git push origin main || true

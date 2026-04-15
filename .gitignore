@@ -11,7 +11,7 @@
 data/reports/*.csv
 data/reports/*.json
 data/reports/*.md
-data/state/
+# data/state/ wordt bewaard in de repo zodat peak_price, entry_price etc. persistent zijn
 
 # Root-level output bestanden (stale artefacten; gebruik data/reports/ als bron)
 /allocation_latest.json
