@@ -1,0 +1,14 @@
+[
+  {
+    "datetime": "2026-04-15T19:41:56Z",
+    "action": "TRAILING_STOP_TRIGGERED",
+    "symbol": "ALGO",
+    "price": 0,
+    "amount_usd": 302.5,
+    "pnl_pct": null,
+    "pnl_usd": null,
+    "entry_price": 0.1243,
+    "source": "kraken_native_trailing_stop",
+    "txids": []
+  }
+]

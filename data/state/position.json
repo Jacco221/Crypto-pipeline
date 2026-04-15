@@ -1,7 +1,3 @@
 {
-  "symbol": "ALGO",
-  "entry_price": 0.1243,
-  "entry_usd": 302.50,
-  "peak_price": 0.1243,
-  "source": "pipeline_cautious"
+  "symbol": null
 }
