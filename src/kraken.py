@@ -376,12 +376,17 @@ def place_trailing_stop(pair: str, volume: float, trail_pct: float = 0.20,
         current_price = ticker.get("last", 0)
 
     # Dynamische decimalen op basis van prijs (Kraken ticksize regels)
+    # Kraken hanteert max 3 decimalen voor de meeste pairs boven $0.1
     if current_price >= 100:
         decimals = 1
     elif current_price >= 1:
         decimals = 3
+    elif current_price >= 0.1:
+        decimals = 3
     elif current_price >= 0.01:
         decimals = 4
+    elif current_price >= 0.001:
+        decimals = 5
     else:
         decimals = 6
     stop_price = round(current_price * (1 - trail_pct), decimals)
