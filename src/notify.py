@@ -733,7 +733,7 @@ def main():
     ap.add_argument("--rapport", action="store_true", help="Stuur performance rapport nu")
     ap.add_argument("--commands", action="store_true", help="Verwerk Telegram commando's")
     ap.add_argument("--reports-dir", type=str, default="data/reports")
-    ap.add_argument("--min-dip-score", type=float, default=0.7)
+    ap.add_argument("--min-dip-score", type=float, default=0.8)
     args = ap.parse_args()
 
     reports = Path(args.reports_dir)

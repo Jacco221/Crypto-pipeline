@@ -897,7 +897,15 @@ def run_advisor(reports_dir: Path) -> None:
                 dip_reason = action["dip_reason"]
                 dip_info = f"\n\n🔔 Dip gesignaleerd: {dip_reason}"
 
-        send_message(f"{regime_header}\n\n📊 {action['reason']}{pnl_text}{dip_info}")
+        # Verwijder redundante "Regime is X. " prefix — staat al in regime_header
+        hold_reason = action["reason"]
+        for _pfx in ("Regime is RISK_ON. ", "Regime is CAUTIOUS. ",
+                     "Regime is RISK_OFF. ", "Regime is UNKNOWN. "):
+            if hold_reason.startswith(_pfx):
+                hold_reason = hold_reason[len(_pfx):]
+                break
+
+        send_message(f"{regime_header}\n\n📊 {hold_reason}{pnl_text}{dip_info}")
         return
 
     # ── SELL TO STABLE ───────────────────────────────────────────────────────
