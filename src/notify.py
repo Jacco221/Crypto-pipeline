@@ -264,7 +264,7 @@ def send_scan_update(reports_dir: Path) -> bool:
 # Dip alert
 # ---------------------------------------------------------------------------
 
-def send_dip_alert(reports_dir: Path, min_score: float = 0.7) -> bool:
+def send_dip_alert(reports_dir: Path, min_score: float = 0.8) -> bool:
     """Stuur alert als er dip-kansen zijn met score >= min_score."""
     dips_path = reports_dir / "dips_latest.csv"
     if not dips_path.exists():
