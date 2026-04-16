@@ -1,7 +1,11 @@
 name: Verkoop naar USD
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      bevestiging:
+        description: 'Typ VERKOOP om te bevestigen'
+        required: true
 
 env:
   PYTHONUNBUFFERED: "1"
@@ -13,6 +17,7 @@ env:
 jobs:
   sell:
     runs-on: ubuntu-latest
+    if: ${{ github.event.inputs.bevestiging == 'VERKOOP' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
