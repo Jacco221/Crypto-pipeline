@@ -10,5 +10,33 @@
     "entry_price": 0.1243,
     "source": "kraken_native_trailing_stop",
     "txids": []
+  },
+  {
+    "datetime": "2026-04-16T03:44:30Z",
+    "action": "SELL",
+    "symbol": "VVV",
+    "price": 8.61,
+    "amount_usd": 1995.03,
+    "pnl_pct": null,
+    "pnl_usd": 0.0,
+    "entry_price": null,
+    "source": "switch",
+    "txids": [
+      "OA6GL4-KTJK7-FCT7L7"
+    ]
+  },
+  {
+    "datetime": "2026-04-16T03:44:30Z",
+    "action": "BUY",
+    "symbol": "LDO",
+    "price": 0.385,
+    "amount_usd": 1989.15,
+    "pnl_pct": null,
+    "pnl_usd": null,
+    "entry_price": null,
+    "source": "switch",
+    "txids": [
+      "OSALLK-HWT76-LYZBKN"
+    ]
   }
 ]
