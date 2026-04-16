@@ -410,15 +410,17 @@ def place_native_trailing_stop(pair: str, volume: float, trail_pct: float = 0.20
 def update_trailing_stop(symbol: str, current_price: float,
                          trail_pct: float = 0.20) -> dict:
     """
-    Zorg dat er een native trailing-stop order actief is voor dit symbool.
+    Update trailing stop op basis van piekprijs (one-way ratchet: alleen omhoog).
 
     Strategie:
-    - Al een native trailing-stop open → niets doen (Kraken beheert het real-time)
-    - Nog geen trailing-stop → cancel alles (verwijder oude stop-loss) + plaats native
-
-    Native trailing-stop schuift automatisch mee met de prijs op Kraken
-    zonder dat de pipeline tussenbeide hoeft te komen.
+    1. Lees piekprijs uit state (position.json) — dit is de bron van waarheid
+    2. Update piekprijs als huidige prijs hoger is
+    3. Bereken stop = piekprijs * (1 - trail_pct)
+    4. Vergelijk met bestaande Kraken stop — alleen herplaatsen als nieuwe stop HOGER is
+    5. Nooit omlaag: als prijs daalt, blijft stop staan op piek * (1 - trail_pct)
     """
+    from src.state import load_position, update_peak_price
+
     result = {
         "symbol": symbol,
         "current_price": current_price,
@@ -432,22 +434,29 @@ def update_trailing_stop(symbol: str, current_price: float,
         result["action"] = "no_pair"
         return result
 
-    new_stop = round(current_price * (1 - trail_pct), 4)
+    # 1. Update piekprijs in state (one-way: alleen omhoog)
+    peak_price = update_peak_price(current_price)
+    if not peak_price or peak_price <= 0:
+        peak_price = current_price
+
+    # 2. Stop altijd berekend op basis van piekprijs — nooit op huidige prijs
+    new_stop = round(peak_price * (1 - trail_pct), 4)
+    result["peak_price"] = peak_price
     result["new_stop"] = new_stop
 
-    # Haal huidige stop op (stop-loss of trailing-stop)
+    # 3. Haal bestaande Kraken stop op
     existing_sl = get_stop_loss_level(symbol)
     existing_ts = get_trailing_stop_order(symbol)
     current_stop = existing_sl or (existing_ts.get("stopprice", 0) if existing_ts else None)
     result["old_stop"] = current_stop
 
-    # Stop gevonden én al hoger of gelijk → niet aanpassen (nooit omlaag)
+    # 4. Alleen herplaatsen als nieuwe stop HOGER is (nooit omlaag)
     if current_stop and new_stop <= current_stop:
         result["action"] = "no_change"
         result["existing_stop"] = current_stop
         return result
 
-    # Geen stop of prijs gestegen → cancel alles + herplaats hoger
+    # 5. Nieuwe stop is hoger (of geen stop) → herplaats
     cancel_all_orders()
     time.sleep(2)
 
@@ -459,7 +468,7 @@ def update_trailing_stop(symbol: str, current_price: float,
             break
 
     if volume > 0:
-        place_trailing_stop(pair, volume, trail_pct, current_price)
+        place_trailing_stop(pair, volume, trail_pct, peak_price)
         result["action"] = "updated" if current_stop else "placed"
         result["updated"] = True
 
