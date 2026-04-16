@@ -121,14 +121,26 @@ def send_daily_summary(reports_dir: Path) -> bool:
             total = row.get("Total_%", "?")
             top_lines += f"  {i}. <b>{sym}</b> — {total}%\n"
 
-    # Allocatie
+    # Allocatie — alleen koopbare coins tonen (niet pump-geblokkeerd)
     alloc_text = ""
-    if alloc_path.exists():
-        alloc = json.loads(alloc_path.read_text())
-        decision = alloc.get("decision", "?")
-        coins = alloc.get("allocation", {})
-        parts = [f"{k} {v*100:.0f}%" for k, v in coins.items()]
-        alloc_text = f"Allocatie: {decision} ({', '.join(parts)})"
+    if alloc_path.exists() and scores_path.exists():
+        try:
+            import csv as _csv
+            alloc = json.loads(alloc_path.read_text())
+            decision = alloc.get("decision", "?")
+            coins = alloc.get("allocation", {})
+            max_7d = 200.0 if regime == "RISK_ON" else 100.0
+            # Filter geblokkeerde coins uit allocatie
+            with open(scores_path) as f:
+                score_rows = {r["symbol"]: float(r.get("chg_7d_raw", 0) or 0)
+                              for r in _csv.DictReader(f)}
+            buyable_coins = {k: v for k, v in coins.items()
+                             if score_rows.get(k, 0) < max_7d}
+            if buyable_coins:
+                parts = [f"{k} {v*100:.0f}%" for k, v in buyable_coins.items()]
+                alloc_text = f"Beste keuze: {', '.join(parts)}"
+        except Exception:
+            pass
 
     # Rotatie
     rotation_text = ""
@@ -139,19 +151,18 @@ def send_daily_summary(reports_dir: Path) -> bool:
             rot_label = rot.get("rotation", "NEUTRAL")
             rot_emoji = {"ALT_SEASON": "🌀", "BTC_SEASON": "₿", "NEUTRAL": "⚖️"}.get(rot_label, "⚖️")
             rotation_text = (
-                f"\n{rot_emoji} <b>Rotatie:</b> {rot_label} "
+                f"{rot_emoji} <b>Rotatie:</b> {rot_label} "
                 f"(BTC {rot.get('btc_7d', 0):+.1f}% vs alts {rot.get('alt_median_7d', 0):+.1f}%)"
             )
         except Exception:
             pass
 
-    # Emoji per regime
+    # Emoji + korte regime-tekst
     emoji = {"RISK_ON": "🟢", "CAUTIOUS": "🟡", "RISK_OFF": "🔴"}.get(regime, "⚪")
 
     msg = (
         f"{emoji} <b>Dagelijkse Crypto Update</b>\n\n"
-        f"<b>Regime:</b> {regime_line}\n"
-        f"<b>Advies:</b> {advice_line}"
+        f"<b>Regime:</b> {regime} — {advice_line}\n"
         f"{rotation_text}\n\n"
         f"<b>Top 5 (koopbaar):</b>\n{top_lines}\n"
         f"{alloc_text}"

@@ -833,13 +833,12 @@ def run_advisor(reports_dir: Path) -> None:
     if macro_note:
         regime_header += f"\n{macro_note}"
 
-    # P&L info toevoegen aan HOLD berichten
+    # P&L info toevoegen aan HOLD berichten (één regel, niet dubbel)
     pnl_text = ""
     pnl = action.get("pnl_info")
     if pnl:
-        sl_info = pnl["sl"]
         tp_info = pnl["tp"]
-        pnl_text = f"\n\n💰 P&L: {sl_info['loss_pct']:+.1f}% | {tp_info['reason']}"
+        pnl_text = f"\n\n💰 {tp_info['reason']}"
 
     # ── STOP-LOSS / TAKE-PROFIT ──────────────────────────────────────────────
     if action["action"] in ("STOP_LOSS", "TAKE_PROFIT"):
@@ -892,24 +891,11 @@ def run_advisor(reports_dir: Path) -> None:
     if action["action"] == "HOLD":
         dip_info = ""
         if action.get("dip_reason"):
-            dip_reason = action["dip_reason"]
             dip_score = float(action.get("best_dip", {}).get("dip_score", 0)) if action.get("best_dip") else 0
-
-            if regime == "RISK_OFF":
-                dip_info = (
-                    f"\n\n🔔 Dip gesignaleerd: {dip_reason}\n"
-                    f"❌ Geen actie — regime is RISK_OFF (wacht op CAUTIOUS/RISK_ON)"
-                )
-            elif dip_score >= 0.8:
-                dip_info = (
-                    f"\n\n🔔 Dip gesignaleerd: {dip_reason}\n"
-                    f"⏳ Geen actie — al in beste coin of cooldown actief"
-                )
-            else:
-                dip_info = (
-                    f"\n\n🔔 Dip gesignaleerd: {dip_reason}\n"
-                    f"❌ Geen actie — score {dip_score:.2f} onder drempel 0.80 voor switch"
-                )
+            # Alleen tonen als score hoog genoeg is om relevant te zijn
+            if dip_score >= 0.8:
+                dip_reason = action["dip_reason"]
+                dip_info = f"\n\n🔔 Dip gesignaleerd: {dip_reason}"
 
         send_message(f"{regime_header}\n\n📊 {action['reason']}{pnl_text}{dip_info}")
         return
