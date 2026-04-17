@@ -327,7 +327,13 @@ def get_stop_loss_level(symbol: str) -> Optional[float]:
             is_sl = descr.get("type") == "sell" and descr.get("ordertype") == "stop-loss"
             pair_clean = pair.upper().replace("/", "")
             if is_sl and (pair_clean in order_pair or order_pair in pair_clean):
-                return float(order.get("stopprice", 0) or 0)
+                # Kraken stop-loss orders: prijs staat in descr.price, niet in stopprice
+                price_str = descr.get("price", "")
+                if price_str and price_str not in ("0", ""):
+                    return float(price_str)
+                # Fallback: stopprice veld
+                sp = float(order.get("stopprice", 0) or 0)
+                return sp if sp > 0 else None
     except Exception:
         pass
     return None

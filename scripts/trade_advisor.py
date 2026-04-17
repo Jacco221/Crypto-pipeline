@@ -789,12 +789,13 @@ def run_advisor(reports_dir: Path) -> None:
             continue
         try:
             trail = update_trailing_stop(sym, price, trail_pct=TRAIL_PCT)
+            peak = trail.get("peak_price", price)  # altijd piekprijs tonen, niet huidige prijs
             if trail["action"] == "placed":
                 new = trail.get("new_stop", 0)
-                print(f"[Advisor] 🛑 Trailing stop geplaatst voor {sym}: ${new:.4f} (-{TRAIL_PCT*100:.0f}%)")
+                print(f"[Advisor] 🛑 Trailing stop geplaatst voor {sym}: ${new:.4f} (-{TRAIL_PCT*100:.0f}% van piek ${peak:.4f})")
                 send_message(
                     f"🛑 <b>Trailing stop geplaatst: {sym}</b>\n\n"
-                    f"Stop: <b>${new:.4f}</b> (-{TRAIL_PCT*100:.0f}% van ${price:.4f})\n"
+                    f"Stop: <b>${new:.4f}</b> (-{TRAIL_PCT*100:.0f}% van piek ${peak:.4f})\n"
                     f"✅ Positie beschermd."
                 )
             elif trail["action"] == "updated":
@@ -804,7 +805,7 @@ def run_advisor(reports_dir: Path) -> None:
                 send_message(
                     f"📈 <b>Trailing stop omhoog: {sym}</b>\n\n"
                     f"Prijs gestegen → stop bijgewerkt\n"
-                    f"Oud: ${old:.4f} → Nieuw: <b>${new:.4f}</b> (-{TRAIL_PCT*100:.0f}% van ${price:.4f})\n"
+                    f"Oud: ${old:.4f} → Nieuw: <b>${new:.4f}</b> (-{TRAIL_PCT*100:.0f}% van piek ${peak:.4f})\n"
                     f"✅ Winst beter beschermd."
                 )
             elif trail["action"] == "no_change":
