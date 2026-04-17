@@ -39,6 +39,8 @@ CACHE_DIR = Path("data/backtest")
 FEE_PCT = 0.0052  # 0.52% roundtrip (Kraken spot)
 COOLDOWN_DAYS = 2
 OVERRIDE_PCT = 10.0
+TRAIL_PCT = 0.20       # 20% trailing stop
+PUMP_FILTER_PCT = 100.0  # Blokkeer coins met >100% 7d winst bij instap
 
 # Top coins om te backtesten (by CoinGecko ID)
 TOP_COINS = [
@@ -389,7 +391,9 @@ def compute_macro_score(fg_value: int, dxy_bullish: bool, btc_dom: float = 50.0)
 
 def run_backtest(data: Dict, start_capital: float = 1000.0,
                  fee_pct: float = FEE_PCT,
-                 use_funding_rate: bool = True) -> Dict:
+                 use_funding_rate: bool = True,
+                 use_trailing_stop: bool = True,
+                 use_pump_filter: bool = True) -> Dict:
     """Draai de backtest simulatie."""
     coins_data = data["coins"]
     fg_df = data["fg"]
@@ -513,31 +517,90 @@ def run_backtest(data: Dict, start_capital: float = 1000.0,
                 proceeds = position["amount"] * sell_price
                 fee = proceeds * (fee_pct / 2)  # halve roundtrip
                 cash = proceeds - fee
-                action = f"SELL {sym}"
+                action = f"SELL {sym} (RISK_OFF)"
                 trades.append({
                     "date": str(date.date()), "action": "SELL", "symbol": sym,
                     "price": sell_price, "fee": fee, "cash_after": cash,
+                    "reason": "RISK_OFF",
                 })
                 position = None
                 last_switch_idx = day_idx
 
         elif regime in ("RISK_ON", "CAUTIOUS"):
-            if not position and cash > 0:
-                # Koop beste coin
-                cdf = coins_data.get(best_symbol)
+            # ---- Trailing stop check ----
+            if use_trailing_stop and position:
+                sym = position["symbol"]
+                cdf = coins_data.get(sym)
                 if cdf is not None and day_idx < len(cdf):
-                    buy_price = cdf["close"].iloc[day_idx]
-                    fee = cash * (fee_pct / 2)
-                    invest = cash - fee
-                    amount = invest / buy_price
-                    position = {"symbol": best_symbol, "amount": amount, "entry_idx": day_idx}
-                    action = f"BUY {best_symbol}"
-                    trades.append({
-                        "date": str(date.date()), "action": "BUY", "symbol": best_symbol,
-                        "price": buy_price, "fee": fee, "cash_after": 0,
-                    })
-                    cash = 0
-                    last_switch_idx = day_idx
+                    current_price = cdf["close"].iloc[day_idx]
+                    # Update max_price (one-way ratchet)
+                    if current_price > position.get("max_price", 0):
+                        position["max_price"] = current_price
+                    stop_level = position["max_price"] * (1 - TRAIL_PCT)
+                    if current_price <= stop_level:
+                        # Stop getriggerd
+                        proceeds = position["amount"] * current_price
+                        fee = proceeds * (fee_pct / 2)
+                        cash = proceeds - fee
+                        entry_price = position.get("entry_price", current_price)
+                        pnl_pct = (current_price / entry_price - 1) * 100 if entry_price else 0
+                        action = f"STOP {sym} ({pnl_pct:+.1f}%)"
+                        trades.append({
+                            "date": str(date.date()), "action": "STOP_LOSS", "symbol": sym,
+                            "price": current_price, "stop_level": round(stop_level, 4),
+                            "max_price": round(position["max_price"], 4),
+                            "pnl_pct": round(pnl_pct, 1),
+                            "fee": fee, "cash_after": cash,
+                            "reason": "TRAILING_STOP",
+                        })
+                        position = None
+                        last_switch_idx = day_idx
+
+            if not position and cash > 0:
+                # Pump filter: blokkeer coins met >100% 7d winst
+                buy_symbol = best_symbol
+                if use_pump_filter:
+                    cdf = coins_data.get(best_symbol)
+                    if cdf is not None and day_idx >= 7:
+                        price_now = cdf["close"].iloc[day_idx]
+                        price_7d = cdf["close"].iloc[day_idx - 7]
+                        chg_7d = (price_now / price_7d - 1) * 100 if price_7d > 0 else 0
+                        if chg_7d > PUMP_FILTER_PCT:
+                            # Zoek de beste niet-gepompte coin
+                            for sym_alt, score_alt in sorted(scores.items(), key=lambda x: x[1], reverse=True):
+                                if sym_alt == best_symbol:
+                                    continue
+                                cdf_alt = coins_data.get(sym_alt)
+                                if cdf_alt is not None and day_idx >= 7:
+                                    p_now = cdf_alt["close"].iloc[day_idx]
+                                    p_7d = cdf_alt["close"].iloc[day_idx - 7]
+                                    chg = (p_now / p_7d - 1) * 100 if p_7d > 0 else 0
+                                    if chg <= PUMP_FILTER_PCT:
+                                        buy_symbol = sym_alt
+                                        break
+                            else:
+                                buy_symbol = None  # Alle coins gepompt → cash aanhouden
+
+                # Koop beste coin
+                if buy_symbol:
+                    cdf = coins_data.get(buy_symbol)
+                    if cdf is not None and day_idx < len(cdf):
+                        buy_price = cdf["close"].iloc[day_idx]
+                        fee = cash * (fee_pct / 2)
+                        invest = cash - fee
+                        amount = invest / buy_price
+                        position = {
+                            "symbol": buy_symbol, "amount": amount,
+                            "entry_idx": day_idx, "entry_price": buy_price,
+                            "max_price": buy_price,
+                        }
+                        action = f"BUY {buy_symbol}"
+                        trades.append({
+                            "date": str(date.date()), "action": "BUY", "symbol": buy_symbol,
+                            "price": buy_price, "fee": fee, "cash_after": 0,
+                        })
+                        cash = 0
+                        last_switch_idx = day_idx
 
             elif position and position["symbol"] != best_symbol:
                 # Check switch
@@ -571,7 +634,11 @@ def run_backtest(data: Dict, start_capital: float = 1000.0,
                         "sell_price": sell_price, "buy_price": buy_price,
                         "fee": total_fee, "cash_after": 0,
                     })
-                    position = {"symbol": best_symbol, "amount": amount, "entry_idx": day_idx}
+                    position = {
+                        "symbol": best_symbol, "amount": amount,
+                        "entry_idx": day_idx, "entry_price": buy_price,
+                        "max_price": buy_price,
+                    }
                     cash = 0
                     last_switch_idx = day_idx
 
@@ -726,29 +793,39 @@ def main():
 
     data = fetch_all_data(days=args.days)
 
-    # Draai beide versies voor vergelijking
-    print("\n[Backtest] Versie A: origineel (zonder funding rate)...")
-    results_old = run_backtest(data, start_capital=args.start_capital, use_funding_rate=False)
+    # Draai alle 3 versies voor vergelijking
+    print("\n[Backtest] Versie A: baseline (geen trailing stop, geen pump filter)...")
+    results_baseline = run_backtest(data, start_capital=args.start_capital,
+                                    use_funding_rate=False,
+                                    use_trailing_stop=False, use_pump_filter=False)
 
-    print("\n[Backtest] Versie B: nieuw (met funding rate)...")
-    results_new = run_backtest(data, start_capital=args.start_capital, use_funding_rate=True)
+    print("\n[Backtest] Versie B: + funding rate...")
+    results_old = run_backtest(data, start_capital=args.start_capital,
+                               use_funding_rate=True,
+                               use_trailing_stop=False, use_pump_filter=False)
+
+    print("\n[Backtest] Versie C: huidig systeem (trailing stop + pump filter + funding rate)...")
+    results_new = run_backtest(data, start_capital=args.start_capital,
+                               use_funding_rate=True,
+                               use_trailing_stop=True, use_pump_filter=True)
 
     write_results(results_new, CACHE_DIR, results_old=results_old)
 
     # Samenvatting
-    print(f"\n{'='*55}")
-    print(f"BACKTEST VERGELIJKING")
-    print(f"{'='*55}")
-    print(f"{'Strategie':<30} {'Rendement':>10} {'Drawdown':>10} {'Trades':>7}")
-    print(f"{'-'*55}")
-    print(f"{'Nieuw (+ funding rate)':<30} {results_new['strategy_return_pct']:>+9.1f}% {results_new['max_drawdown_pct']:>9.1f}% {results_new['total_trades']:>7}")
-    print(f"{'Oud (origineel)':<30} {results_old['strategy_return_pct']:>+9.1f}% {results_old['max_drawdown_pct']:>9.1f}% {results_old['total_trades']:>7}")
-    print(f"{'BTC buy-and-hold':<30} {results_new['btc_buyhold_return_pct']:>+9.1f}%")
+    print(f"\n{'='*65}")
+    print(f"BACKTEST VERGELIJKING — {args.days} dagen, ${args.start_capital:.0f} startkapitaal")
+    print(f"{'='*65}")
+    print(f"{'Strategie':<38} {'Rendement':>10} {'Drawdown':>10} {'Trades':>7}")
+    print(f"{'-'*65}")
+    print(f"{'C: Huidig (stop + pump filter)':<38} {results_new['strategy_return_pct']:>+9.1f}% {results_new['max_drawdown_pct']:>9.1f}% {results_new['total_trades']:>7}")
+    print(f"{'B: + Funding rate':<38} {results_old['strategy_return_pct']:>+9.1f}% {results_old['max_drawdown_pct']:>9.1f}% {results_old['total_trades']:>7}")
+    print(f"{'A: Baseline':<38} {results_baseline['strategy_return_pct']:>+9.1f}% {results_baseline['max_drawdown_pct']:>9.1f}% {results_baseline['total_trades']:>7}")
+    print(f"{'BTC buy-and-hold':<38} {results_new['btc_buyhold_return_pct']:>+9.1f}%")
     if results_new.get("eth_buyhold_return_pct"):
-        print(f"{'ETH buy-and-hold':<30} {results_new['eth_buyhold_return_pct']:>+9.1f}%")
-    print(f"{'='*55}")
-    delta = results_new['strategy_return_pct'] - results_old['strategy_return_pct']
-    print(f"Verbetering nieuw vs oud: {delta:+.1f}%")
+        print(f"{'ETH buy-and-hold':<38} {results_new['eth_buyhold_return_pct']:>+9.1f}%")
+    print(f"{'='*65}")
+    delta = results_new['strategy_return_pct'] - results_baseline['strategy_return_pct']
+    print(f"Verbetering huidig vs baseline: {delta:+.1f}%")
 
 
 if __name__ == "__main__":

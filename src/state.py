@@ -212,10 +212,11 @@ def check_take_profit(current_price: float) -> dict:
                 f"(verkoopt bij {TRAILING_STOP_PCT*100:.0f}% drop)."
             )
     else:
+        stop_price = round(peak * (1 - KRAKEN_HARD_SL_PCT), 4)
         result["triggered"] = False
         result["reason"] = (
             f"P&L: {total_change*100:+.1f}% (piek: +{peak_change*100:.0f}%). "
-            f"Kraken stop: -{KRAKEN_HARD_SL_PCT*100:.0f}% van piek actief."
+            f"Stop: ${stop_price:.4f} (-{KRAKEN_HARD_SL_PCT*100:.0f}% van piek ${peak:.4f})."
         )
 
     return result
