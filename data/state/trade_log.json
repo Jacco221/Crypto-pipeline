@@ -38,5 +38,33 @@
     "txids": [
       "OSALLK-HWT76-LYZBKN"
     ]
+  },
+  {
+    "datetime": "2026-04-18T05:22:21Z",
+    "action": "SELL",
+    "symbol": "LDO",
+    "price": 0.431,
+    "amount_usd": 2241.85,
+    "pnl_pct": 11.95,
+    "pnl_usd": 252.7,
+    "entry_price": 0.385,
+    "source": "switch",
+    "txids": [
+      "OX5QKZ-JWDEB-3Z3XAT"
+    ]
+  },
+  {
+    "datetime": "2026-04-18T05:22:21Z",
+    "action": "BUY",
+    "symbol": "DYDX",
+    "price": 0.142,
+    "amount_usd": 2236.02,
+    "pnl_pct": null,
+    "pnl_usd": null,
+    "entry_price": null,
+    "source": "switch",
+    "txids": [
+      "OOCEVN-EKPGT-5IQBZY"
+    ]
   }
 ]
