@@ -532,6 +532,21 @@ def determine_action(reports_dir: Path) -> dict:
 
     # ---- BESLISLOGICA ----
 
+    # ── CAUTIOUS: reduceer naar 50% als crypto > 55% van portfolio ──────────
+    # Dit zorgt dat bij een regime-switch van RISK_ON → CAUTIOUS altijd 50% vrij komt
+    if regime == "CAUTIOUS" and current and current["est_usd"] > DUST_THRESHOLD_USD:
+        total_value = current["est_usd"] + usd_balance
+        target_crypto_usd = total_value * 0.50
+        if current["est_usd"] > target_crypto_usd + 50:
+            result["action"] = "SELL_PARTIAL"
+            result["sell_target_usd"] = target_crypto_usd
+            result["reason"] = (
+                f"Regime is {regime}. Positie reduceren: "
+                f"${current['est_usd']:.0f} → ${target_crypto_usd:.0f} "
+                f"(50% van portfolio ${total_value:.0f})."
+            )
+            return result
+
     # Zit je al in de top coin?
     if current and target_coin:
         if current["symbol"].upper() == target_coin.upper():
@@ -553,6 +568,17 @@ def determine_action(reports_dir: Path) -> dict:
                 else:
                     why = "score onder 0.85" if dip_score_val < 0.85 else "regime niet RISK_ON"
                     dip_reason += f" (geen actie — {why})"
+
+            # RISK_ON + al in top coin + vrij USD → bijstorten (volledig inzetten)
+            if usd_balance > 50 and regime == "RISK_ON":
+                result["action"] = "BUY_ADDITIONAL"
+                result["invest_usd"] = usd_balance
+                result["target"] = current["symbol"]
+                result["reason"] = (
+                    f"Regime is {regime}. Al in top coin {current['symbol']}. "
+                    f"${usd_balance:.0f} vrij USD bijstorten (volledig inzetten)."
+                )
+                return result
 
             result["action"] = "HOLD"
             result["reason"] = hold_reason
@@ -587,6 +613,23 @@ def determine_action(reports_dir: Path) -> dict:
                 switch = {"switch": True, "reason": f"Score voordeel {advantage:.1f}% (>= {min_advantage}%)"}
             else:
                 switch = {"switch": False, "reason": f"Score voordeel {advantage:.1f}% — te klein om te switchen (min {min_advantage}%)"}
+
+        # Override: significant vrij USD (>15% van portfolio) → altijd heralloceren
+        # naar sterkste coin, ook als voordeel < 5%. Idle kapitaal kost rendement.
+        if not switch["switch"] and usd_balance > 50 and current:
+            total_value = current["est_usd"] + usd_balance
+            free_ratio = usd_balance / total_value if total_value > 0 else 0
+            advantage = 0.0
+            if current_score > 0:
+                advantage = ((target_score - current_score) / current_score) * 100
+            if free_ratio > 0.15:
+                switch = {
+                    "switch": True,
+                    "reason": (
+                        f"${usd_balance:.0f} vrij USD ({free_ratio*100:.0f}% van portfolio) "
+                        f"heralloceren → sterkste coin. Voordeel {advantage:.1f}%."
+                    ),
+                }
 
         result["switch_analysis"] = switch
 
@@ -886,6 +929,117 @@ def run_advisor(reports_dir: Path) -> None:
             f"(~${current['est_usd']:.2f}){pnl_str} → USD\n"
             f"TX: {', '.join(result.get('txid', []))}"
         )
+        return
+
+    # ── SELL_PARTIAL (CAUTIOUS: reduceer naar 50%) ───────────────────────────
+    if action["action"] == "SELL_PARTIAL":
+        current = action["current"]
+        target_usd = action.get("sell_target_usd", current["est_usd"] * 0.5)
+        pair = find_usd_pair(current["symbol"])
+        if not pair:
+            send_message(f"❌ Geen pair voor {current['symbol']}")
+            return
+
+        ticker = get_ticker(pair)
+        current_price = ticker.get("last", 0)
+        if current_price <= 0:
+            send_message(f"❌ Kon prijs niet ophalen voor {current['symbol']}")
+            return
+
+        sell_usd = current["est_usd"] - target_usd
+        sell_volume = round(sell_usd / current_price, 6)
+
+        snap_before = _portfolio_snapshot()
+        send_message(
+            f"{regime_header}\n\n"
+            f"🟡 <b>Positie halveren: {current['symbol']}</b>\n\n"
+            f"CAUTIOUS → 50% crypto, 50% USD\n"
+            f"<b>Portfolio VOOR:</b>\n{_snapshot_text(snap_before)}"
+        )
+
+        from src.kraken import place_market_order, cancel_all_orders
+        import time as _time
+        try:
+            cancel_all_orders()
+            _time.sleep(2)
+        except Exception:
+            pass
+
+        result_order = place_market_order(pair, "sell", sell_volume)
+        log_trade(
+            action="SELL_PARTIAL", symbol=current["symbol"],
+            price=current_price, amount_usd=sell_usd,
+            source="cautious_rebalance", txids=result_order.get("txid", []),
+        )
+
+        _time.sleep(3)
+        snap_after = _portfolio_snapshot()
+        send_message(
+            f"{regime_header}\n\n"
+            f"✅ <b>Positie gehalveerd: {current['symbol']}</b>\n\n"
+            f"Verkocht: {sell_volume:.4f} {current['symbol']} (~${sell_usd:.0f})\n\n"
+            f"<b>Portfolio NA:</b>\n{_snapshot_text(snap_after)}\n\n"
+            f"{_compare_snapshots(snap_before, snap_after)}\n"
+            f"TX: {', '.join(result_order.get('txid', []))}"
+        )
+        return
+
+    # ── BUY_ADDITIONAL (bijstorten bij RISK_ON) ──────────────────────────────
+    if action["action"] == "BUY_ADDITIONAL":
+        target = action.get("target")
+        usd = action.get("invest_usd", 0)
+        pair = find_usd_pair(target)
+        if not pair or usd < 5:
+            send_message(f"⚠️ Bijstorten mislukt: geen pair of te weinig USD")
+            return
+
+        snap_before = _portfolio_snapshot()
+        send_message(
+            f"{regime_header}\n\n"
+            f"➕ <b>Bijstorten: {target}</b>\n\n"
+            f"RISK_ON → volledig inzetten\n"
+            f"<b>Portfolio VOOR:</b>\n{_snapshot_text(snap_before)}\n\n"
+            f"📋 Inzet: ${usd:.0f}"
+        )
+
+        from src.kraken import place_market_order
+        import time as _time
+        result_order = {}
+        try:
+            result_order = place_market_order(pair, "buy", usd)
+        except Exception as e:
+            send_message(f"❌ Bijstorten {target} mislukt: {e}")
+            return
+
+        verification = verify_position(target)
+        if verification["confirmed"]:
+            entry_price = verification["price"]
+            actual_usd = verification["est_usd"]
+            old_pos = load_position()
+            save_positions([{
+                "symbol": target,
+                "entry_price": old_pos.get("entry_price", entry_price) if old_pos else entry_price,
+                "entry_usd": actual_usd,
+                "peak_price": max(old_pos.get("peak_price", 0) if old_pos else 0, entry_price),
+                "source": "bijstorten",
+            }])
+            log_trade(
+                action="BUY", symbol=target, price=entry_price,
+                amount_usd=usd, source="bijstorten",
+                txids=result_order.get("txid", []),
+            )
+            _time.sleep(3)
+            snap_after = _portfolio_snapshot()
+            send_message(
+                f"{regime_header}\n\n"
+                f"✅ <b>Bijgestort: {target}</b>\n\n"
+                f"Extra ingezet: ${usd:.0f} @ ${entry_price:.4f}\n\n"
+                f"<b>Portfolio NA:</b>\n{_snapshot_text(snap_after)}\n\n"
+                f"{_compare_snapshots(snap_before, snap_after)}\n"
+                f"TX: {', '.join(result_order.get('txid', []))}"
+            )
+        else:
+            send_message(f"❌ Bijstorten {target}: verificatie mislukt. Controleer Kraken.")
         return
 
     # ── HOLD ────────────────────────────────────────────────────────────────
