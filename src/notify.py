@@ -137,8 +137,9 @@ def send_daily_summary(reports_dir: Path) -> bool:
             buyable_coins = {k: v for k, v in coins.items()
                              if score_rows.get(k, 0) < max_7d}
             if buyable_coins:
-                parts = [f"{k} {v*100:.0f}%" for k, v in buyable_coins.items()]
-                alloc_text = f"Beste keuze: {', '.join(parts)}"
+                # Altijd 1 coin: de hoogst gewogen koopbare coin
+                top_coin = max(buyable_coins, key=buyable_coins.get)
+                alloc_text = f"Beste keuze: <b>{top_coin}</b>"
         except Exception:
             pass
 

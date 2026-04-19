@@ -214,9 +214,9 @@ def check_take_profit(current_price: float) -> dict:
     else:
         stop_price = round(peak * (1 - KRAKEN_HARD_SL_PCT), 4)
         result["triggered"] = False
+        piek_str = f" | piek: +{peak_change*100:.0f}%" if abs(peak_change - total_change) > 0.005 else ""
         result["reason"] = (
-            f"P&L: {total_change*100:+.1f}% (piek: +{peak_change*100:.0f}%). "
-            f"Stop: ${stop_price:.4f} (-{KRAKEN_HARD_SL_PCT*100:.0f}% van piek ${peak:.4f})."
+            f"P&L: {total_change*100:+.1f}%{piek_str} | Stop: ${stop_price:.4f}"
         )
 
     return result
