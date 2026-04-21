@@ -286,13 +286,14 @@ def should_switch(current_score: float, target_score: float,
             result["switch"] = True
             result["reason"] = (
                 f"Cooldown actief ({hours:.0f}h van {cooldown_hours:.0f}h), "
-                f"maar voordeel is {advantage:.1f}% (>= {override_pct}%) — override toegestaan."
+                f"maar score-voordeel {advantage:.1f}% >= {override_pct}% — override."
             )
         else:
+            voordeel_str = f"{advantage:.1f}%" if advantage > 0 else "onbekend (coin niet in top rankings)"
             result["switch"] = False
             result["reason"] = (
-                f"Cooldown actief: {hours:.0f}h in positie, nog {remaining:.0f}h te gaan. "
-                f"Voordeel ({advantage:.1f}%) is te laag voor override (min {override_pct}%)."
+                f"Cooldown: {hours:.0f}h in positie, nog {remaining:.0f}h te gaan. "
+                f"Score-voordeel: {voordeel_str} (override vereist {override_pct}%)."
             )
         return result
 

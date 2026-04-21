@@ -90,7 +90,7 @@ jobs:
       - name: Send Telegram daily summary
         if: always()
         run: |
-          python3 -m src.notify --daily --dips --reports-dir data/reports || true
+          python3 -m src.notify --daily --reports-dir data/reports || true
 
       - name: Trade advisor (voorstel via Telegram)
         if: always()

@@ -620,22 +620,45 @@ def determine_action(reports_dir: Path) -> dict:
                 best_target = dip_target
                 best_reason = dip_reason
 
-        # positions.json is altijd leeg in GitHub Actions (gitignored).
-        # Als we een echte Kraken positie hebben, doe altijd score-vergelijking
-        # en nooit "geen positie — vrij om in te stappen" gebruiken als reden.
-        switch = should_switch(current_score, target_score)
+        # Bereken voordeel altijd expliciet (ook als current_score ontbreekt)
+        score_advantage = 0.0
+        if current_score > 0:
+            score_advantage = ((target_score - current_score) / current_score) * 100
+        elif target_score > 0:
+            # Huidige coin staat niet meer in rankings → target heeft altijd voordeel
+            score_advantage = 100.0
+
+        # Controleer of huidige positie verliesgevend is
+        pnl_pct = 0.0
+        position = load_position()
+        if position and position.get("entry_price") and current:
+            pair_tmp = find_usd_pair(current["symbol"])
+            if pair_tmp:
+                try:
+                    ticker_tmp = get_ticker(pair_tmp)
+                    price_tmp = ticker_tmp.get("last", 0)
+                    if price_tmp and position["entry_price"]:
+                        pnl_pct = (price_tmp - position["entry_price"]) / position["entry_price"] * 100
+                except Exception:
+                    pass
+
+        # Als we verlies draaien (< -8%) verlaag de cooldown override naar 5%
+        # zodat het systeem sneller naar een betere coin kan switchen
+        override_pct = 10.0
+        if pnl_pct < -8.0:
+            override_pct = 5.0
+
+        switch = should_switch(current_score, target_score,
+                               override_pct=override_pct)
 
         # Override: als should_switch zei "geen positie" maar we hebben WEL een
         # Kraken positie, behandel het als een normale score-check zonder cooldown
         if switch.get("reason", "").startswith("Geen huidige positie") and current:
-            min_advantage = 5.0  # minstens 5% beter voordat we switchen
-            advantage = 0.0
-            if current_score > 0:
-                advantage = ((target_score - current_score) / current_score) * 100
-            if advantage >= min_advantage:
-                switch = {"switch": True, "reason": f"Score voordeel {advantage:.1f}% (>= {min_advantage}%)"}
+            min_advantage = 5.0
+            if score_advantage >= min_advantage:
+                switch = {"switch": True, "reason": f"Score voordeel {score_advantage:.1f}% (>= {min_advantage}%)"}
             else:
-                switch = {"switch": False, "reason": f"Score voordeel {advantage:.1f}% — te klein om te switchen (min {min_advantage}%)"}
+                switch = {"switch": False, "reason": f"Score voordeel {score_advantage:.1f}% — te klein om te switchen (min {min_advantage}%)"}
 
         # Override: significant vrij USD (>15% van portfolio) → altijd heralloceren
         # naar sterkste coin, ook als voordeel < 5%. Idle kapitaal kost rendement.
