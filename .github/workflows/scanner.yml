@@ -50,7 +50,7 @@ jobs:
           KRAKEN_API_KEY: ${{ secrets.KRAKEN_API_KEY }}
           KRAKEN_API_SECRET: ${{ secrets.KRAKEN_API_SECRET }}
         run: |
-          python3 -m src.notify --scan-update --dips --reports-dir data/reports || true
+          python3 -m src.notify --scan-update --reports-dir data/reports || true
 
       - name: Trade advisor (voorstel via Telegram)
         env:
