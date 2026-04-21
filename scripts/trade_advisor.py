@@ -1044,14 +1044,6 @@ def run_advisor(reports_dir: Path) -> None:
 
     # ── HOLD ────────────────────────────────────────────────────────────────
     if action["action"] == "HOLD":
-        dip_info = ""
-        if action.get("dip_reason"):
-            dip_score = float(action.get("best_dip", {}).get("dip_score", 0)) if action.get("best_dip") else 0
-            # Alleen tonen als score hoog genoeg is om relevant te zijn
-            if dip_score >= 0.8:
-                dip_reason = action["dip_reason"]
-                dip_info = f"\n\n🔔 Dip gesignaleerd: {dip_reason}"
-
         # Verwijder redundante "Regime is X. " prefix — staat al in regime_header
         hold_reason = action["reason"]
         for _pfx in ("Regime is RISK_ON. ", "Regime is CAUTIOUS. ",
@@ -1060,7 +1052,7 @@ def run_advisor(reports_dir: Path) -> None:
                 hold_reason = hold_reason[len(_pfx):]
                 break
 
-        send_message(f"{regime_header}\n\n📊 {hold_reason}{pnl_text}{dip_info}")
+        send_message(f"{regime_header}\n\n📊 {hold_reason}{pnl_text}")
         return
 
     # ── SELL TO STABLE ───────────────────────────────────────────────────────
