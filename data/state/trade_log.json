@@ -66,5 +66,33 @@
     "txids": [
       "OOCEVN-EKPGT-5IQBZY"
     ]
+  },
+  {
+    "datetime": "2026-04-21T03:42:16Z",
+    "action": "SELL",
+    "symbol": "DYDX",
+    "price": 0.1313,
+    "amount_usd": 4947.08,
+    "pnl_pct": -7.54,
+    "pnl_usd": 2711.06,
+    "entry_price": 0.142,
+    "source": "switch",
+    "txids": [
+      "OACBY3-4TBMF-MRY44I"
+    ]
+  },
+  {
+    "datetime": "2026-04-21T03:42:16Z",
+    "action": "BUY",
+    "symbol": "BLUR",
+    "price": 0.035,
+    "amount_usd": 4941.74,
+    "pnl_pct": null,
+    "pnl_usd": null,
+    "entry_price": null,
+    "source": "switch",
+    "txids": [
+      "OQPFHO-HK5SN-2DZXGR"
+    ]
   }
 ]

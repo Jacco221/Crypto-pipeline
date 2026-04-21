@@ -1,8 +1,8 @@
 {
-  "symbol": "DYDX",
-  "entry_price": 0.142,
-  "entry_usd": 2236.02,
-  "entry_time": "2026-04-18T05:22:21Z",
-  "peak_price": 0.148,
+  "symbol": "BLUR",
+  "entry_price": 0.035,
+  "entry_usd": 4941.74,
+  "entry_time": "2026-04-21T03:42:16Z",
+  "peak_price": 0.035,
   "source": "pipeline"
 }
