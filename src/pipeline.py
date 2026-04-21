@@ -220,6 +220,7 @@ def _score_coin_bulk(coin: dict, btc_7d: float, btc_30d: float,
         "Total_%": round(total * 100, 1),
         "score": round(total, 4),
         # Raw price change — used by pump filter (niet genormaliseerd)
+        "chg_24h_raw": round(coin.get("price_change_percentage_24h_in_currency") or 0.0, 2),
         "chg_7d_raw": round(coin.get("price_change_percentage_7d_in_currency") or 0.0, 2),
         "chg_30d_raw": round(coin.get("price_change_percentage_30d_in_currency") or 0.0, 2),
     }

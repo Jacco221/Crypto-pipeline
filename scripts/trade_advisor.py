@@ -266,19 +266,22 @@ def _find_best_available_target(scores_path, regime: str, reports_dir,
 def _check_pump_filter(symbol: str, regime: str = "CAUTIOUS",
                        reports_dir: Path = None) -> dict:
     """
-    Blokkeer aankoop als een coin te veel is gestegen in 7 dagen.
-    Drempel is regime-afhankelijk:
-      CAUTIOUS / RISK_OFF → 100%  (strikt: onzekere markt)
-      RISK_ON             → 200%  (soepeler: bull markt, grote moves zijn reëler)
+    Blokkeer aankoop als een coin te veel is gestegen in 7 dagen of 24 uur.
 
-    Primaire bron: scores_latest.csv (al beschikbaar, geen extra API call)
-    Fallback: CoinGecko API
-    Bij twijfel (API fout, geen data): BLOKKEER — veiligheid boven kans.
+    7d drempel (regime-afhankelijk):
+      CAUTIOUS / RISK_OFF → 100%
+      RISK_ON             → 200%
+
+    24h drempel (altijd): +15% — voorkomt inkopen op kortetermijn top.
+
+    Primaire bron: scores_latest.csv — geen extra API call nodig.
     """
     max_7d_pct = 200.0 if regime == "RISK_ON" else 100.0
+    max_24h_pct = 15.0  # altijd: >15% in 24h = te heet om nu in te stappen
     chg_7d = None
+    chg_24h = None
 
-    # Primaire bron: scores_latest.csv — gebruik chg_7d_raw (echte % koerswijziging)
+    # Primaire bron: scores_latest.csv
     if reports_dir:
         try:
             import csv as _csv
@@ -287,14 +290,17 @@ def _check_pump_filter(symbol: str, regime: str = "CAUTIOUS",
                 with open(scores_path) as f:
                     for row in _csv.DictReader(f):
                         if row.get("symbol", "").upper() == symbol.upper():
-                            raw = row.get("chg_7d_raw", "")
-                            if raw not in ("", None):
-                                chg_7d = float(raw)
+                            raw_7d = row.get("chg_7d_raw", "")
+                            raw_24h = row.get("chg_24h_raw", "")
+                            if raw_7d not in ("", None):
+                                chg_7d = float(raw_7d)
+                            if raw_24h not in ("", None):
+                                chg_24h = float(raw_24h)
                             break
         except Exception as e:
             print(f"[Advisor] Pump filter scores CSV fout: {e}")
 
-    # Fallback: CoinGecko API
+    # Fallback: CoinGecko API (alleen als CSV data ontbreekt)
     if chg_7d is None:
         try:
             import requests as _req
@@ -311,27 +317,44 @@ def _check_pump_filter(symbol: str, regime: str = "CAUTIOUS",
             )
             if r.status_code == 200:
                 data = r.json()
-                chg_7d = data.get("market_data", {}).get(
-                    "price_change_percentage_7d", None)
+                md = data.get("market_data", {})
+                chg_7d = md.get("price_change_percentage_7d", None)
+                chg_24h = md.get("price_change_percentage_24h", None)
         except Exception as e:
             print(f"[Advisor] Pump filter CoinGecko fout voor {symbol}: {e}")
 
-    # Bij twijfel (geen data): blokkeer — veiligheid boven kans
+    # Bij twijfel: blokkeer
     if chg_7d is None:
         print(f"[Advisor] Pump filter: geen 7d data voor {symbol} — geblokkeerd (veiligheid)")
         return {
             "blocked": True,
-            "reason": f"⛔ Pump filter: geen 7d data voor {symbol} — geblokkeerd (veiligheid boven kans)",
-            "chg_7d": None,
+            "reason": f"⛔ Pump filter: geen 7d data voor {symbol} — geblokkeerd",
+            "chg_7d": None, "chg_24h": chg_24h,
         }
 
+    # 24h filter — voorkomt inkopen op kortetermijn top
+    if chg_24h is not None and chg_24h >= max_24h_pct:
+        return {
+            "blocked": True,
+            "reason": (
+                f"⛔ 24h filter: {symbol} is +{chg_24h:.0f}% in 24 uur "
+                f"(max {max_24h_pct:.0f}%) — wacht op afkoeling"
+            ),
+            "chg_7d": chg_7d, "chg_24h": chg_24h,
+        }
+
+    # 7d filter
     if chg_7d >= max_7d_pct:
         return {
             "blocked": True,
-            "reason": f"⛔ Pump filter: {symbol} is +{chg_7d:.0f}% in 7 dagen (max {max_7d_pct:.0f}% bij {regime}) — niet instappen na extreme pump",
-            "chg_7d": chg_7d,
+            "reason": (
+                f"⛔ 7d filter: {symbol} is +{chg_7d:.0f}% in 7 dagen "
+                f"(max {max_7d_pct:.0f}% bij {regime})"
+            ),
+            "chg_7d": chg_7d, "chg_24h": chg_24h,
         }
-    return {"blocked": False, "chg_7d": chg_7d}
+
+    return {"blocked": False, "chg_7d": chg_7d, "chg_24h": chg_24h}
 
 
 def determine_action(reports_dir: Path) -> dict:
