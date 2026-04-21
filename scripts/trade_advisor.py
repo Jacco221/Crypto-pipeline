@@ -246,6 +246,11 @@ def _find_best_available_target(scores_path, regime: str, reports_dir,
             # Geen coin met voldoende voordeel meer (lijst is gesorteerd)
             break
 
+        # Check of coin beschikbaar is op Kraken
+        if not find_usd_pair(sym):
+            skipped.append(f"{sym} (niet op Kraken)")
+            continue
+
         pump = _check_pump_filter(sym, regime=regime, reports_dir=reports_dir)
         if pump["blocked"]:
             skipped.append(f"{sym} ({pump['reason'].split('—')[0].strip()})")
@@ -680,6 +685,29 @@ def determine_action(reports_dir: Path) -> dict:
         result["switch_analysis"] = switch
 
         if switch["switch"]:
+            # Check Kraken beschikbaarheid vóór pump filter
+            if not find_usd_pair(best_target):
+                cascade = _find_best_available_target(
+                    scores_path=reports_dir / "scores_latest.csv",
+                    regime=regime,
+                    reports_dir=reports_dir,
+                    current_score=current_score,
+                    min_advantage_pct=5.0,
+                    current_sym=current["symbol"],
+                )
+                if cascade:
+                    best_target = cascade["symbol"]
+                    best_reason = (
+                        f"Top coin niet beschikbaar op Kraken. "
+                        f"Cascade naar {best_target} (score {cascade['score']*100:.1f}%, "
+                        f"+{cascade['advantage']:.1f}% voordeel).{cascade['pump_note']}"
+                    )
+                    print(f"[Advisor] Cascade (geen Kraken pair): {best_target}")
+                else:
+                    result["action"] = "HOLD"
+                    result["reason"] = f"Regime is {regime}. Top coin niet op Kraken en geen alternatief — blijf in {current['symbol']}."
+                    return result
+
             # Pump filter — drempel afhankelijk van regime
             pump = _check_pump_filter(best_target, regime=regime, reports_dir=reports_dir)
             if pump["blocked"]:
