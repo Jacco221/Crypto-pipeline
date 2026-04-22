@@ -104,15 +104,17 @@ def send_daily_summary(reports_dir: Path) -> bool:
     if scores_path.exists():
         import csv
         max_7d = 200.0 if regime == "RISK_ON" else 100.0
+        max_24h = 15.0  # zelfde drempel als pump filter in trade_advisor
         with open(scores_path) as f:
             all_rows = list(csv.DictReader(f))
         buyable = []
         for row in all_rows:
             try:
-                chg = float(row.get("chg_7d_raw", 0) or 0)
+                chg_7d = float(row.get("chg_7d_raw", 0) or 0)
+                chg_24h = float(row.get("chg_24h_raw", 0) or 0)
             except ValueError:
-                chg = 0.0
-            if chg < max_7d:
+                chg_7d = chg_24h = 0.0
+            if chg_7d < max_7d and chg_24h < max_24h:
                 buyable.append(row)
             if len(buyable) == 5:
                 break
@@ -130,12 +132,15 @@ def send_daily_summary(reports_dir: Path) -> bool:
             decision = alloc.get("decision", "?")
             coins = alloc.get("allocation", {})
             max_7d = 200.0 if regime == "RISK_ON" else 100.0
-            # Filter geblokkeerde coins uit allocatie
+            max_24h = 15.0
+            # Filter geblokkeerde coins uit allocatie (7d én 24h check)
             with open(scores_path) as f:
-                score_rows = {r["symbol"]: float(r.get("chg_7d_raw", 0) or 0)
-                              for r in _csv.DictReader(f)}
-            buyable_coins = {k: v for k, v in coins.items()
-                             if score_rows.get(k, 0) < max_7d}
+                score_rows = {r["symbol"]: r for r in _csv.DictReader(f)}
+            buyable_coins = {
+                k: v for k, v in coins.items()
+                if float(score_rows.get(k, {}).get("chg_7d_raw", 0) or 0) < max_7d
+                and float(score_rows.get(k, {}).get("chg_24h_raw", 0) or 0) < max_24h
+            }
             if buyable_coins:
                 # Altijd 1 coin: de hoogst gewogen koopbare coin
                 top_coin = max(buyable_coins, key=buyable_coins.get)
