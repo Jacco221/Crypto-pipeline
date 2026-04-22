@@ -103,25 +103,37 @@ def send_daily_summary(reports_dir: Path) -> bool:
     top_lines = ""
     if scores_path.exists():
         import csv
+        from src.state import load_position
         max_7d = 200.0 if regime == "RISK_ON" else 100.0
         max_24h = 15.0  # zelfde drempel als pump filter in trade_advisor
+        # Huidige holding altijd tonen, ook als die pumpt
+        current_holding = ""
+        try:
+            pos = load_position()
+            if pos and pos.get("symbol"):
+                current_holding = pos["symbol"].upper()
+        except Exception:
+            pass
         with open(scores_path) as f:
             all_rows = list(csv.DictReader(f))
         buyable = []
         for row in all_rows:
+            sym = row.get("symbol", "").upper()
             try:
                 chg_7d = float(row.get("chg_7d_raw", 0) or 0)
                 chg_24h = float(row.get("chg_24h_raw", 0) or 0)
             except ValueError:
                 chg_7d = chg_24h = 0.0
-            if chg_7d < max_7d and chg_24h < max_24h:
+            # Huidige holding altijd doorlaten, pump filter alleen voor nieuwe aankopen
+            if sym == current_holding or (chg_7d < max_7d and chg_24h < max_24h):
                 buyable.append(row)
             if len(buyable) == 5:
                 break
         for i, row in enumerate(buyable, 1):
             sym = row.get("symbol", "?")
             total = row.get("Total_%", "?")
-            top_lines += f"  {i}. <b>{sym}</b> — {total}%\n"
+            in_bezit = " 💼" if sym.upper() == current_holding else ""
+            top_lines += f"  {i}. <b>{sym}</b> — {total}%{in_bezit}\n"
 
     # Allocatie — alleen koopbare coins tonen (niet pump-geblokkeerd)
     alloc_text = ""
