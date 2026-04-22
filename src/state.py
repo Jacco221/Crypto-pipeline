@@ -297,7 +297,14 @@ def should_switch(current_score: float, target_score: float,
             )
         return result
 
-    if advantage < 5.0:
+    # Als huidige coin niet in rankings staat (score=0) maar target wel → altijd switchen
+    if current_score <= 0 and target_score > 0:
+        result["switch"] = True
+        result["reason"] = (
+            f"Cooldown verlopen ({hours:.0f}h). "
+            f"Huidige coin niet meer in rankings — switch naar sterkste coin."
+        )
+    elif advantage < 5.0:
         result["switch"] = False
         result["reason"] = (
             f"Voordeel ({advantage:.1f}%) is te klein om te switchen "
