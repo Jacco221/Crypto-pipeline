@@ -94,5 +94,33 @@
     "txids": [
       "OQPFHO-HK5SN-2DZXGR"
     ]
+  },
+  {
+    "datetime": "2026-04-23T08:09:45Z",
+    "action": "SELL",
+    "symbol": "BLUR",
+    "price": 0.03207,
+    "amount_usd": 4500.37,
+    "pnl_pct": -8.37,
+    "pnl_usd": -441.37,
+    "entry_price": 0.035,
+    "source": "switch",
+    "txids": [
+      "OU2LGZ-PB72R-UKGMKT"
+    ]
+  },
+  {
+    "datetime": "2026-04-23T08:09:45Z",
+    "action": "BUY",
+    "symbol": "CHZ",
+    "price": 0.04751,
+    "amount_usd": 4502.7,
+    "pnl_pct": null,
+    "pnl_usd": null,
+    "entry_price": null,
+    "source": "switch",
+    "txids": [
+      "OEX2VU-TIE6S-L3F22J"
+    ]
   }
 ]
