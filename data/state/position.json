@@ -1,8 +1,8 @@
 {
-  "symbol": "CHZ",
-  "entry_price": 0.04751,
-  "entry_usd": 4502.7,
-  "entry_time": "2026-04-23T08:09:45Z",
-  "peak_price": 0.04867,
+  "symbol": "SPK",
+  "entry_price": 0.04543,
+  "entry_usd": 4593.59,
+  "entry_time": "2026-04-24T08:20:08Z",
+  "peak_price": 0.04543,
   "source": "pipeline"
 }

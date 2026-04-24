@@ -122,5 +122,33 @@
     "txids": [
       "OEX2VU-TIE6S-L3F22J"
     ]
+  },
+  {
+    "datetime": "2026-04-24T08:20:08Z",
+    "action": "SELL",
+    "symbol": "CHZ",
+    "price": 0.04872,
+    "amount_usd": 4606.51,
+    "pnl_pct": 2.55,
+    "pnl_usd": 103.81,
+    "entry_price": 0.04751,
+    "source": "switch",
+    "txids": [
+      "OHN6FW-UHCD3-B5S6QZ"
+    ]
+  },
+  {
+    "datetime": "2026-04-24T08:20:08Z",
+    "action": "BUY",
+    "symbol": "SPK",
+    "price": 0.04543,
+    "amount_usd": 4593.59,
+    "pnl_pct": null,
+    "pnl_usd": null,
+    "entry_price": null,
+    "source": "switch",
+    "txids": [
+      "OK7U54-ZSQK6-YDL6EZ"
+    ]
   }
 ]
