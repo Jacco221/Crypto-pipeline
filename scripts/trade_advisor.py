@@ -1277,78 +1277,8 @@ def run_advisor(reports_dir: Path) -> None:
 
         if action["action"] == "BUY":
             usd = action.get("invest_usd", action["usd_available"])
-            alloc = action.get("alloc_decision", {})
-            is_diversify = (
-                alloc.get("decision") == "DIVERSIFY"
-                and len(alloc.get("allocation", {})) >= 2
-                and regime == "RISK_ON"  # Bij CAUTIOUS: altijd 1 coin (50% budget)
-            )
 
-            if is_diversify:
-                # ── Diversificatie: koop 2 coins ──
-                coins = list(alloc["allocation"].items())
-                from src.kraken import place_market_order
-                new_positions = []
-                all_txids = []
-                bought_parts = []
-                failed_parts = []
-                for sym, weight in coins:
-                    usd_part = usd * weight
-                    pair_part = find_usd_pair(sym)
-                    if not pair_part:
-                        failed_parts.append(f"{sym} (geen pair)")
-                        continue
-                    order_err = None
-                    result_order = {}
-                    try:
-                        result_order = place_market_order(pair_part, "buy", usd_part)
-                    except Exception as e:
-                        order_err = str(e)
-
-                    # Verificeer werkelijke balans op Kraken
-                    verif = verify_position(sym)
-                    if verif["confirmed"]:
-                        entry_price = verif["price"]
-                        actual_usd = verif["est_usd"]
-                        new_positions.append({
-                            "symbol": sym,
-                            "entry_price": entry_price,
-                            "entry_usd": actual_usd,
-                            "peak_price": entry_price,
-                            "source": "pipeline_diversify",
-                        })
-                        all_txids.extend(result_order.get("txid", []))
-                        # Trailing stop per coin
-                        ts_note = ""
-                        try:
-                            place_native_trailing_stop(pair_part, verif["amount"],
-                                                       trail_pct=TRAIL_PCT,
-                                                       current_price=entry_price)
-                            ts_note = f" 🛑-{TRAIL_PCT*100:.0f}%"
-                        except Exception as e:
-                            ts_note = f" ⚠️TS:{e}"
-                        bought_parts.append(f"✅ <b>{sym}</b> ~${actual_usd:.2f} @ ${entry_price:.4f}{ts_note}")
-                        log_trade(
-                            action="BUY", symbol=sym, price=entry_price,
-                            amount_usd=actual_usd, source="pipeline_diversify",
-                            txids=result_order.get("txid", []),
-                        )
-                    else:
-                        failed_parts.append(f"❌ {sym}: {order_err or 'niet gevonden op Kraken'}")
-
-                if new_positions:
-                    save_positions(new_positions)
-                fail_text = ("\n\n⚠️ Mislukt:\n" + "\n".join(failed_parts)) if failed_parts else ""
-                send_message(
-                    f"{regime_header}\n\n"
-                    f"🟢 <b>Diversificatie aankopen bevestigd</b>\n\n"
-                    + "\n".join(bought_parts) +
-                    fail_text +
-                    f"\n\nTotaal ingezet: ${usd:.2f}"
-                )
-                return
-
-            # ── Enkele coin koop ──────────────────────────────────────────────
+            # ── Enkele coin koop (altijd, nooit diversificatie) ───────────────
             pair = find_usd_pair(target)
             if not pair:
                 send_message(f"❌ Geen USD pair voor {target}")

@@ -2,6 +2,7 @@
   "symbol": "APE",
   "entry_price": 0.1504,
   "entry_usd": 1855.31,
+  "entry_time": "2026-04-26T03:53:32Z",
   "peak_price": 0.1504,
-  "source": "pipeline_diversify"
+  "source": "pipeline"
 }
