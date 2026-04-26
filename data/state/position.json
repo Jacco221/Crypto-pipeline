@@ -1,8 +1,7 @@
 {
-  "symbol": "SPK",
-  "entry_price": 0.04543,
-  "entry_usd": 4593.59,
-  "entry_time": "2026-04-24T08:20:08Z",
-  "peak_price": 0.04543,
-  "source": "pipeline"
+  "symbol": "APE",
+  "entry_price": 0.1504,
+  "entry_usd": 1855.31,
+  "peak_price": 0.1504,
+  "source": "pipeline_diversify"
 }

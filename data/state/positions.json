@@ -1,1 +1,9 @@
-[]
+[
+  {
+    "symbol": "APE",
+    "entry_price": 0.1504,
+    "entry_usd": 1855.31,
+    "peak_price": 0.1504,
+    "source": "pipeline_diversify"
+  }
+]
