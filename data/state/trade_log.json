@@ -164,5 +164,19 @@
     "txids": [
       "O3ZPOW-I4DWZ-LOBJ6Y"
     ]
+  },
+  {
+    "datetime": "2026-04-26T05:27:31Z",
+    "action": "BUY",
+    "symbol": "APE",
+    "price": 0.1506,
+    "amount_usd": 1850.86,
+    "pnl_pct": null,
+    "pnl_usd": null,
+    "entry_price": null,
+    "source": "bijstorten",
+    "txids": [
+      "OS77CE-V2OXB-3HSBPR"
+    ]
   }
 ]
